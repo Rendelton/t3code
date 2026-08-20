@@ -1341,10 +1341,16 @@ function defaultModelSelection(context: PiSessionContext): ModelSelection | unde
     : undefined;
 }
 
-/** Build the `--model` pattern (`provider/id:thinking`) for session spawn. */
+/** Build the `--model` pattern (`provider/id:thinking`) for session spawn.
+ *
+ * The thinking level is always explicit: inheriting pi's global
+ * `defaultThinkingLevel` would make thread behavior depend on the user's
+ * CLI settings, and some self-hosted endpoints return empty completions for
+ * levels they don't actually support. T3's model picker exposes the levels
+ * per model; `off` is the safe floor when nothing is selected. */
 function piModelPattern(modelSelection: ModelSelection): string | undefined {
-  const thinking = getModelSelectionStringOptionValue(modelSelection, "thinkingLevel");
-  return thinking ? `${modelSelection.model}:${thinking}` : modelSelection.model;
+  const thinking = getModelSelectionStringOptionValue(modelSelection, "thinkingLevel") ?? "off";
+  return `${modelSelection.model}:${thinking}`;
 }
 
 /** Convert pi session entries into turn snapshots (one turn per user message). */

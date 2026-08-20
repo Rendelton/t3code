@@ -224,6 +224,7 @@ export const makePiRpcConnection = (
     const events = yield* Queue.unbounded<PiRpcEvent>();
     const exited = yield* Deferred.make<number | null, PiRuntimeError>();
     const stderrRef = yield* Ref.make("");
+    const stdinLines = yield* Queue.unbounded<string>();
     const pending = new Map<string, Deferred.Deferred<unknown, PiRuntimeError>>();
     let nextRequestId = 0;
 
@@ -255,6 +256,7 @@ export const makePiRpcConnection = (
         }
         pending.clear();
         yield* Queue.shutdown(events).pipe(Effect.ignore);
+        yield* Queue.shutdown(stdinLines).pipe(Effect.ignore);
       });
 
     // Route stdout records: responses go to their awaiting Deferred, everything
@@ -312,19 +314,13 @@ export const makePiRpcConnection = (
       Effect.forkIn(scope),
     );
 
+    // Persistent stdin writer: a single long-lived stream run so individual
+    // writes never complete the sink (closing stdin would EOF the child).
+    yield* Stream.fromQueue(stdinLines)
+      .pipe(Stream.encodeText, Stream.run(child.stdin), Effect.ignore, Effect.forkIn(scope));
+
     const write: PiRpcConnection["write"] = (payload) =>
-      Stream.make(`${JSON.stringify(payload)}\n`).pipe(
-        Stream.encodeText,
-        Stream.run(child.stdin),
-        Effect.mapError(
-          (cause) =>
-            new PiRuntimeError({
-              operation: "stdin",
-              detail: "Failed to write to the pi process stdin.",
-              cause,
-            }),
-        ),
-      );
+      Queue.offer(stdinLines, `${JSON.stringify(payload)}\n`).pipe(Effect.asVoid);
 
     const send: PiRpcConnection["send"] = (command, timeoutMs = DEFAULT_SEND_TIMEOUT_MS) =>
       Effect.gen(function* () {

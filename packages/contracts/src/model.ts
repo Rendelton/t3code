@@ -154,7 +154,7 @@ export const DEFAULT_MODEL_BY_PROVIDER: Partial<Record<ProviderDriverKind, strin
   [CURSOR_DRIVER_KIND]: "auto",
   [GROK_DRIVER_KIND]: "grok-build",
   [OPENCODE_DRIVER_KIND]: "openai/gpt-5",
-  [PI_DRIVER_KIND]: "Qwen3.8-27B-4bit",
+  [PI_DRIVER_KIND]: "omlx/Qwen3.8-27B-4bit",
 };
 
 /** Per-provider text generation model defaults. */
@@ -165,7 +165,7 @@ export const DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER: Partial<
   [CLAUDE_DRIVER_KIND]: "claude-haiku-4-5",
   [CURSOR_DRIVER_KIND]: "composer-2",
   [OPENCODE_DRIVER_KIND]: "openai/gpt-5",
-  [PI_DRIVER_KIND]: "Qwen3.8-27B-4bit",
+  [PI_DRIVER_KIND]: "omlx/Qwen3.8-27B-4bit",
 };
 
 export const MODEL_SLUG_ALIASES_BY_PROVIDER: Partial<
@@ -216,8 +216,9 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER: Partial<
   },
   [OPENCODE_DRIVER_KIND]: {},
   [PI_DRIVER_KIND]: {
-    qwen: "Qwen3.8-27B-4bit",
-    "qwen3.8": "Qwen3.8-27B-4bit",
+    qwen: "omlx/Qwen3.8-27B-4bit",
+    "qwen3.8": "omlx/Qwen3.8-27B-4bit",
+    "Qwen3.8-27B-4bit": "omlx/Qwen3.8-27B-4bit",
   },
 };
 
