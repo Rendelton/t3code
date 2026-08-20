@@ -663,6 +663,21 @@ export const OpenCodeIcon: Icon = (props) => (
   </svg>
 );
 
+export const PiIcon: Icon = (props) => (
+  <svg {...props} viewBox="0 0 32 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path
+      className="dark:hidden"
+      d="M4 8H28V13H24V34H19V13H13V34H8V13H4V8Z"
+      fill="#211E1E"
+    />
+    <path
+      className="hidden dark:block"
+      d="M4 8H28V13H24V34H19V13H13V34H8V13H4V8Z"
+      fill="#F1ECEC"
+    />
+  </svg>
+);
+
 export const GithubCopilotIcon: Icon = ({ className, ...props }) => (
   <svg
     {...props}
