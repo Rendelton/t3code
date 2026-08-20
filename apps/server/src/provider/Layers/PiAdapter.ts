@@ -49,13 +49,12 @@ import { ServerConfig } from "../../config.ts";
 import {
   ProviderAdapterProcessError,
   ProviderAdapterRequestError,
-  ProviderAdapterSessionClosedError,
   ProviderAdapterSessionNotFoundError,
   ProviderAdapterValidationError,
-  type ProviderAdapterError,
 } from "../Errors.ts";
 import {
   makePiRpcConnection,
+  type PiRpcCommand,
   type PiRpcConnection,
   type PiRpcEvent,
 } from "../piRuntime.ts";
@@ -956,6 +955,10 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             Effect.tapError(() => connection.close.pipe(Effect.ignore)),
           );
         const stateRecord = asRecord(state) ?? {};
+        const sessionId =
+          typeof stateRecord.sessionId === "string" && stateRecord.sessionId.length > 0
+            ? stateRecord.sessionId
+            : undefined;
         const stateModel = asRecord(stateRecord.model);
         const initialModelSlug =
           (stateModel ? `${recordAsString(stateModel, "provider")}/${recordAsString(stateModel, "id")}` : undefined) ??
@@ -1021,11 +1024,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         yield* emit({
           ...(yield* stampEvent(yield* buildEventBase({ threadId: input.threadId }))),
           type: "thread.started",
-          payload: {
-            ...(typeof stateRecord.sessionId === "string"
-              ? { providerThreadId: stateRecord.sessionId }
-              : {}),
-          },
+          payload: sessionId ? { providerThreadId: sessionId } : {},
         });
 
         return session;
@@ -1187,10 +1186,12 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         typeof answers.answer === "string"
           ? answers.answer
           : Object.values(answers).find((value) => typeof value === "string");
+      const response: PiRpcCommand =
+        typeof answer === "string" ? { value: answer } : { cancelled: true };
       yield* context.connection.write({
         type: "extension_ui_response",
         id: dialog.dialogId,
-        ...(typeof answer === "string" ? { value: answer } : { cancelled: true }),
+        ...response,
       }).pipe(Effect.mapError(toRequestError("respondToUserInput.write")));
       yield* emit({
         ...(yield* stampEvent(

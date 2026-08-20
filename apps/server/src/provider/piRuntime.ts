@@ -17,6 +17,7 @@
  * @module provider/piRuntime
  */
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Data from "effect/Data";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -183,6 +184,7 @@ export const makePiRpcConnection = (
   Effect.gen(function* () {
     const scope = yield* Scope.Scope;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const hostPlatform = yield* HostProcessPlatform;
     const spawnCommand = yield* resolveSpawnCommand(
       options.binaryPath,
       buildPiRpcArgs(options),
@@ -206,7 +208,7 @@ export const makePiRpcConnection = (
           shell: spawnCommand.shell,
           // A dedicated process group on POSIX lets close() take down pi's
           // own subprocesses (bash tool commands) along with pi itself.
-          detached: process.platform !== "win32",
+          detached: hostPlatform !== "win32",
         }),
       )
       .pipe(
@@ -229,7 +231,7 @@ export const makePiRpcConnection = (
     let nextRequestId = 0;
 
     const killProcessGroup = (signal: NodeJS.Signals): Effect.Effect<void> =>
-      process.platform === "win32"
+      hostPlatform === "win32"
         ? child
             .kill({ killSignal: signal, forceKillAfter: "3 seconds" })
             .pipe(Effect.asVoid, Effect.ignore)
@@ -464,7 +466,11 @@ export function piCommandsFromResponse(data: unknown): ReadonlyArray<PiCommandIn
  */
 export const probePiInventory = (
   options: PiRpcSpawnOptions,
-): Effect.Effect<PiInventory, PiRuntimeError, ChildProcessSpawner.ChildProcessSpawner> =>
+): Effect.Effect<
+  PiInventory,
+  PiRuntimeError,
+  ChildProcessSpawner.ChildProcessSpawner
+> =>
   Effect.gen(function* () {
     const connection = yield* makePiRpcConnection({ ...options, noSession: true });
     const modelsData = yield* connection.send(

@@ -4,7 +4,7 @@
  * their mapping into ServerProvider drafts.
  */
 // @effect-diagnostics nodeBuiltinImport:off
-import * as NodeFS from "node:fs/promises";
+import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
@@ -12,7 +12,6 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { PiSettings } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
 import { checkPiProviderStatus, makePendingPiProvider } from "./PiProvider.ts";
@@ -21,15 +20,13 @@ const decodePiSettings = Schema.decodeSync(PiSettings);
 const __dirname = NodePath.dirname(import.meta.url.replace("file://", ""));
 const mockRpcPath = NodePath.join(__dirname, "../../../scripts/pi-mock-rpc.mjs");
 async function makeFakePi() {
-  const dir = await NodeFS.mkdtemp(NodePath.join(NodeOS.tmpdir(), "pi-provider-test-"));
+  const dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "pi-provider-test-"));
   const wrapperPath = NodePath.join(dir, "fake-pi.sh");
   const script = `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(mockRpcPath)} "$@"\n`;
-  await NodeFS.writeFile(wrapperPath, script, "utf8");
-  await NodeFS.chmod(wrapperPath, 0o755);
+  await NodeFSP.writeFile(wrapperPath, script, "utf8");
+  await NodeFSP.chmod(wrapperPath, 0o755);
   return wrapperPath;
 }
-
-const piProviderTestLayer = NodeServices.layer;
 
 it.layer(NodeServices.layer)("PiProvider", (it) => {
   it.effect("pending snapshot is warning + custom models only", () =>
