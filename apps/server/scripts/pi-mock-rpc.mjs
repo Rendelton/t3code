@@ -14,6 +14,13 @@ import { join } from "node:path";
 
 const scenario = process.env.FAKE_PI_SCENARIO ?? "basic";
 const logPath = process.env.FAKE_PI_LOG;
+
+// `pi --version` prints and exits — mirror that so version probes complete.
+if (process.argv.includes("--version")) {
+  process.stdout.write("pi-mock 0.84.2\n");
+  process.exit(0);
+}
+
 const sessionDir = mkdtempSync(join(tmpdir(), "fake-pi-session-"));
 let sessionFile = join(sessionDir, "session.jsonl");
 let model = { id: "Qwen3.8-27B-4bit", name: "Qwen3.8-27B-4bit", provider: "omlx" };
