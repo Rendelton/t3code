@@ -327,6 +327,42 @@ describe("ProviderRuntimeIngestion", () => {
     };
   }
 
+  it("resets the session when a provider emits turn.aborted without turn.completed (pi interrupt)", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-pi-turn-started"),
+      provider: ProviderDriverKind.make("pi"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId: asTurnId("pi-turn-1"),
+    });
+
+    await waitForThread(
+      harness.readModel,
+      (thread) =>
+        thread.session?.status === "running" && thread.session?.activeTurnId === "pi-turn-1",
+    );
+
+    harness.emit({
+      type: "turn.aborted",
+      eventId: asEventId("evt-pi-turn-aborted"),
+      provider: ProviderDriverKind.make("pi"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:00.001Z",
+      turnId: asTurnId("pi-turn-1"),
+      payload: { reason: "Interrupted by user." },
+    });
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.status === "ready" && entry.session?.activeTurnId === null,
+    );
+    expect(thread.session?.status).toBe("ready");
+  });
+
   it("maps turn started/completed events into thread session updates", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
