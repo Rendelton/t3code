@@ -12,8 +12,7 @@ import {
 
 const collectRecords = (chunks: ReadonlyArray<Uint8Array>): Promise<Array<string>> =>
   Stream.make(...chunks)
-    .pipe(piRpcRecords, Stream.runCollect)
-    .pipe(Effect.runPromise)
+    .pipe(piRpcRecords, Stream.runCollect, Effect.runPromise)
     .then((chunk) => Array.from(chunk));
 
 const encoder = new TextEncoder();

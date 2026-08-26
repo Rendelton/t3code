@@ -18,6 +18,7 @@
  */
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as Clock from "effect/Clock";
 import * as Data from "effect/Data";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -185,11 +186,9 @@ export const makePiRpcConnection = (
     const scope = yield* Scope.Scope;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const hostPlatform = yield* HostProcessPlatform;
-    const spawnCommand = yield* resolveSpawnCommand(
-      options.binaryPath,
-      buildPiRpcArgs(options),
-      { env: options.environment },
-    ).pipe(
+    const spawnCommand = yield* resolveSpawnCommand(options.binaryPath, buildPiRpcArgs(options), {
+      env: options.environment,
+    }).pipe(
       Effect.mapError(
         (cause) =>
           new PiRuntimeError({
@@ -245,10 +244,7 @@ export const makePiRpcConnection = (
 
     const onProcessExit = (code: number | null) =>
       Effect.gen(function* () {
-        yield* Deferred.done(
-          exited,
-          Exit.succeed(code),
-        ).pipe(Effect.ignore);
+        yield* Deferred.done(exited, Exit.succeed(code)).pipe(Effect.ignore);
         const failure = new PiRuntimeError({
           operation: "stdin",
           detail: `The pi process exited (code ${code ?? "null"}).`,
@@ -318,15 +314,20 @@ export const makePiRpcConnection = (
 
     // Persistent stdin writer: a single long-lived stream run so individual
     // writes never complete the sink (closing stdin would EOF the child).
-    yield* Stream.fromQueue(stdinLines)
-      .pipe(Stream.encodeText, Stream.run(child.stdin), Effect.ignore, Effect.forkIn(scope));
+    yield* Stream.fromQueue(stdinLines).pipe(
+      Stream.encodeText,
+      Stream.run(child.stdin),
+      Effect.ignore,
+      Effect.forkIn(scope),
+    );
 
     const write: PiRpcConnection["write"] = (payload) =>
       Queue.offer(stdinLines, `${JSON.stringify(payload)}\n`).pipe(Effect.asVoid);
 
     const send: PiRpcConnection["send"] = (command, timeoutMs = DEFAULT_SEND_TIMEOUT_MS) =>
       Effect.gen(function* () {
-        const id = `t3-${Date.now().toString(36)}-${(nextRequestId += 1)}`;
+        const timestamp = yield* Clock.currentTimeMillis;
+        const id = `t3-${timestamp.toString(36)}-${(nextRequestId += 1)}`;
         const deferred = yield* Deferred.make<unknown, PiRuntimeError>();
         pending.set(id, deferred);
         const awaitResponse = Deferred.await(deferred).pipe(
@@ -408,12 +409,16 @@ const asTrimmedString = (value: unknown): string | undefined => {
 
 const PI_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
-function thinkingLevelsFromModel(model: Record<string, unknown>): ReadonlyArray<string> | undefined {
+function thinkingLevelsFromModel(
+  model: Record<string, unknown>,
+): ReadonlyArray<string> | undefined {
   const map = asRecord(model.thinkingLevelMap);
   if (map === undefined) {
     return model.reasoning === true ? ["off", "minimal", "low", "medium", "high"] : undefined;
   }
-  const supported = PI_THINKING_LEVELS.filter((level) => map[level] !== null && map[level] !== undefined);
+  const supported = PI_THINKING_LEVELS.filter(
+    (level) => map[level] !== null && map[level] !== undefined,
+  );
   return supported.length > 1 ? supported : undefined;
 }
 
@@ -466,11 +471,7 @@ export function piCommandsFromResponse(data: unknown): ReadonlyArray<PiCommandIn
  */
 export const probePiInventory = (
   options: PiRpcSpawnOptions,
-): Effect.Effect<
-  PiInventory,
-  PiRuntimeError,
-  ChildProcessSpawner.ChildProcessSpawner
-> =>
+): Effect.Effect<PiInventory, PiRuntimeError, ChildProcessSpawner.ChildProcessSpawner> =>
   Effect.gen(function* () {
     const connection = yield* makePiRpcConnection({ ...options, noSession: true });
     const modelsData = yield* connection.send(

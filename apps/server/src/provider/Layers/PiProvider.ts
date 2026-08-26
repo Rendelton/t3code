@@ -66,9 +66,7 @@ function titleCaseSlug(value: string): string {
   return segments.join(" ");
 }
 
-function thinkingLevelCapabilities(
-  levels: ReadonlyArray<string>,
-): ModelCapabilities | undefined {
+function thinkingLevelCapabilities(levels: ReadonlyArray<string>): ModelCapabilities | undefined {
   if (levels.length === 0) {
     return undefined;
   }
@@ -91,9 +89,7 @@ function thinkingLevelCapabilities(
   });
 }
 
-function piModelsToServerModels(
-  inventory: PiInventory,
-): ReadonlyArray<ServerProviderModel> {
+function piModelsToServerModels(inventory: PiInventory): ReadonlyArray<ServerProviderModel> {
   const models: Array<ServerProviderModel> = [];
   let pinnedDefaultSeen = false;
   for (const model of inventory.models) {
@@ -176,14 +172,7 @@ export const makePendingPiProvider = (piSettings: PiSettings): Effect.Effect<Ser
     });
   });
 
-const runPiVersionCommand = (
-  piSettings: PiSettings,
-  environment: NodeJS.ProcessEnv,
-): Effect.Effect<
-  { readonly stdout: string; readonly stderr: string; readonly code: number },
-  unknown,
-  ChildProcessSpawner.ChildProcessSpawner
-> =>
+const runPiVersionCommand = (piSettings: PiSettings, environment: NodeJS.ProcessEnv) =>
   Effect.gen(function* () {
     const command = piSettings.binaryPath || "pi";
     const spawnCommand = yield* resolveSpawnCommand(command, ["--version"], {
@@ -202,11 +191,7 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
   piSettings: PiSettings,
   cwd: string,
   environment: NodeJS.ProcessEnv = process.env,
-): Effect.fn.Return<
-  ServerProviderDraft,
-  never,
-  ChildProcessSpawner.ChildProcessSpawner
-> {
+): Effect.fn.Return<ServerProviderDraft, never, ChildProcessSpawner.ChildProcessSpawner> {
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
   const customModels = piModelsFromSettings(piSettings);
 
@@ -234,7 +219,8 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
   if (Result.isFailure(versionResult)) {
     const error = versionResult.failure;
     yield* Effect.logWarning("pi CLI health check failed.", {
-      errorTag: typeof error === "object" && error !== null && "_tag" in error ? error._tag : "unknown",
+      errorTag:
+        typeof error === "object" && error !== null && "_tag" in error ? error._tag : "unknown",
     });
     return buildServerProvider({
       presentation: PI_PRESENTATION,
@@ -292,15 +278,14 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
     cwd,
     environment,
     ...(piSettings.agentDir ? { agentDir: piSettings.agentDir } : {}),
-  }).pipe(
-    Effect.timeoutOption(PI_INVENTORY_PROBE_TIMEOUT_MS),
-    Effect.exit,
-  );
+  }).pipe(Effect.timeoutOption(PI_INVENTORY_PROBE_TIMEOUT_MS), Effect.exit);
 
   if (Exit.isFailure(inventoryExit)) {
     yield* Effect.logWarning("pi inventory probe failed.", {
       errorTag:
-        typeof inventoryExit.cause === "object" && inventoryExit.cause !== null && "_tag" in inventoryExit.cause
+        typeof inventoryExit.cause === "object" &&
+        inventoryExit.cause !== null &&
+        "_tag" in inventoryExit.cause
           ? String(inventoryExit.cause._tag)
           : "unknown",
     });
@@ -314,7 +299,8 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
         version,
         status: "error",
         auth: { status: "unknown" },
-        message: "pi CLI is installed but its RPC mode failed to start. Check `pi --version` output for install issues.",
+        message:
+          "pi CLI is installed but its RPC mode failed to start. Check `pi --version` output for install issues.",
       },
     });
   }

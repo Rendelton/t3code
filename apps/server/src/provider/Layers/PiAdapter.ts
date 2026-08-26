@@ -170,6 +170,7 @@ export interface PiAdapterLiveOptions {
 }
 
 const nowIso: Effect.Effect<string> = Effect.map(DateTime.now, DateTime.formatIso);
+const nowEpochMillis: Effect.Effect<number> = Effect.map(DateTime.now, DateTime.toEpochMillis);
 
 function recordAsString(record: Record<string, unknown>, key: string): string | undefined {
   const value = record[key];
@@ -216,8 +217,8 @@ function piUsageNumbers(usage: unknown): {
     output: nonNegative(record?.output),
     cacheRead: nonNegative(record?.cacheRead),
     cacheWrite: nonNegative(record?.cacheWrite),
-    total: nonNegative(record?.totalTokens) ||
-      nonNegative(record?.input) + nonNegative(record?.output),
+    total:
+      nonNegative(record?.totalTokens) || nonNegative(record?.input) + nonNegative(record?.output),
     costUsd: nonNegative(cost?.total),
   };
 }
@@ -309,22 +310,20 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
     // file must exist on disk for pi's `-e <path>` loading; embedding the
     // source keeps it immune to bundler asset-path differences.
     const approvalGatePath = `${serverConfig.stateDir}/pi/t3-approval-gate.ts`;
-    yield* fileSystem
-      .makeDirectory(`${serverConfig.stateDir}/pi`, { recursive: true })
-      .pipe(
-        Effect.andThen(
-          fileSystem.writeFile(
-            approvalGatePath,
-            new TextEncoder().encode(T3_APPROVAL_GATE_EXTENSION_SOURCE),
-          ),
+    yield* fileSystem.makeDirectory(`${serverConfig.stateDir}/pi`, { recursive: true }).pipe(
+      Effect.andThen(
+        fileSystem.writeFile(
+          approvalGatePath,
+          new TextEncoder().encode(T3_APPROVAL_GATE_EXTENSION_SOURCE),
         ),
-        Effect.catchCause((cause) =>
-          Effect.logError("Failed to write the pi approval-gate extension.", {
-            path: approvalGatePath,
-            cause,
-          }),
-        ),
-      );
+      ),
+      Effect.catchCause((cause) =>
+        Effect.logError("Failed to write the pi approval-gate extension.", {
+          path: approvalGatePath,
+          cause,
+        }),
+      ),
+    );
 
     interface EventBaseInput {
       readonly threadId: ThreadId;
@@ -412,7 +411,9 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       const turnId = context.activeTurnId;
       sessions.delete(context.session.threadId);
       yield* emit({
-        ...(yield* stampEvent(yield* buildEventBase({ threadId: context.session.threadId, turnId }))),
+        ...(yield* stampEvent(
+          yield* buildEventBase({ threadId: context.session.threadId, turnId }),
+        )),
         type: "runtime.error",
         payload: {
           message,
@@ -420,7 +421,9 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         },
       }).pipe(Effect.ignore);
       yield* emit({
-        ...(yield* stampEvent(yield* buildEventBase({ threadId: context.session.threadId, turnId }))),
+        ...(yield* stampEvent(
+          yield* buildEventBase({ threadId: context.session.threadId, turnId }),
+        )),
         type: "session.exited",
         payload: {
           reason: message,
@@ -446,7 +449,10 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       };
       yield* emit({
         ...(yield* stampEvent(
-          yield* buildEventBase({ threadId: context.session.threadId, turnId: context.activeTurnId }),
+          yield* buildEventBase({
+            threadId: context.session.threadId,
+            turnId: context.activeTurnId,
+          }),
         )),
         type: "thread.token-usage.updated",
         payload: { usage },
@@ -455,14 +461,18 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
 
     const finishTurn = Effect.fn("finishTurn")(function* (
       context: PiSessionContext,
-      completion: { readonly kind: "settled" } | { readonly kind: "aborted"; readonly reason: string },
+      completion:
+        | { readonly kind: "settled" }
+        | { readonly kind: "aborted"; readonly reason: string },
     ) {
       const turnId = context.activeTurnId;
       if (turnId !== undefined && !context.turnEnded) {
         context.turnEnded = true;
         if (completion.kind === "aborted") {
           yield* emit({
-            ...(yield* stampEvent(yield* buildEventBase({ threadId: context.session.threadId, turnId }))),
+            ...(yield* stampEvent(
+              yield* buildEventBase({ threadId: context.session.threadId, turnId }),
+            )),
             type: "turn.aborted",
             payload: { reason: completion.reason },
           });
@@ -477,9 +487,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
               state: failed ? "failed" : "completed",
               ...(context.lastRunError !== undefined ? { errorMessage: context.lastRunError } : {}),
               ...(context.currentModelSlug ? { usage: { model: context.currentModelSlug } } : {}),
-              ...(context.cumulativeCostUsd > 0
-                ? { totalCostUsd: context.cumulativeCostUsd }
-                : {}),
+              ...(context.cumulativeCostUsd > 0 ? { totalCostUsd: context.cumulativeCostUsd } : {}),
             },
           });
         }
@@ -643,7 +651,8 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
               .map((block) => recordAsString(asRecord(block) ?? {}, "text"))
               .filter((text): text is string => text !== undefined)
               .join("\n");
-            context.lastRunError = errorText.length > 0 ? errorText : "The model reported an error.";
+            context.lastRunError =
+              errorText.length > 0 ? errorText : "The model reported an error.";
           }
           // Assistant message item: synthesized id since pi messages are unnamed.
           const messageItemId = `pi-msg-${(context.nextMessageItem += 1)}`;
@@ -651,9 +660,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           const fullText = content
             .map((block) => {
               const blockRecord = asRecord(block);
-              return blockRecord?.type === "text"
-                ? recordAsString(blockRecord, "text")
-                : undefined;
+              return blockRecord?.type === "text" ? recordAsString(blockRecord, "text") : undefined;
             })
             .filter((text): text is string => text !== undefined)
             .join("\n");
@@ -746,11 +753,9 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         }
 
         case "compaction_start": {
-          const itemId = `pi-compaction-${Date.now()}`;
+          const itemId = `pi-compaction-${yield* nowEpochMillis}`;
           yield* emit({
-            ...(yield* stampEvent(
-              yield* buildEventBase({ threadId, turnId, itemId, raw: event }),
-            )),
+            ...(yield* stampEvent(yield* buildEventBase({ threadId, turnId, itemId, raw: event }))),
             type: "item.started",
             payload: {
               itemType: "context_compaction",
@@ -770,9 +775,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             yield* emitTokenUsage(context);
           }
           yield* emit({
-            ...(yield* stampEvent(
-              yield* buildEventBase({ threadId, turnId, raw: event }),
-            )),
+            ...(yield* stampEvent(yield* buildEventBase({ threadId, turnId, raw: event }))),
             type: "item.completed",
             payload: {
               itemType: "context_compaction",
@@ -838,17 +841,9 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           ),
         ),
         Stream.runDrain,
-        Effect.flatMap(() =>
-          emitUnexpectedExit(
-            context,
-            "The pi process exited unexpectedly.",
-          ),
-        ),
+        Effect.flatMap(() => emitUnexpectedExit(context, "The pi process exited unexpectedly.")),
         Effect.catchCause((cause) =>
-          emitUnexpectedExit(
-            context,
-            `The pi event stream failed: ${causeToString(cause)}`,
-          ),
+          emitUnexpectedExit(context, `The pi event stream failed: ${causeToString(cause)}`),
         ),
         Effect.forkIn(context.sessionScope),
       );
@@ -940,20 +935,18 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
 
         // Handshake: confirm the RPC process is responsive and capture its
         // session identity (file + id + model).
-        const state = yield* connection
-          .send({ type: "get_state" }, 20_000)
-          .pipe(
-            Effect.mapError(
-              (cause) =>
-                new ProviderAdapterProcessError({
-                  provider: PROVIDER,
-                  threadId: input.threadId,
-                  detail: `pi RPC handshake failed for thread '${input.threadId}'.`,
-                  cause,
-                }),
-            ),
-            Effect.tapError(() => connection.close.pipe(Effect.ignore)),
-          );
+        const state = yield* connection.send({ type: "get_state" }, 20_000).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ProviderAdapterProcessError({
+                provider: PROVIDER,
+                threadId: input.threadId,
+                detail: `pi RPC handshake failed for thread '${input.threadId}'.`,
+                cause,
+              }),
+          ),
+          Effect.tapError(() => connection.close.pipe(Effect.ignore)),
+        );
         const stateRecord = asRecord(state) ?? {};
         const sessionId =
           typeof stateRecord.sessionId === "string" && stateRecord.sessionId.length > 0
@@ -961,8 +954,9 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             : undefined;
         const stateModel = asRecord(stateRecord.model);
         const initialModelSlug =
-          (stateModel ? `${recordAsString(stateModel, "provider")}/${recordAsString(stateModel, "id")}` : undefined) ??
-          input.modelSelection?.model;
+          (stateModel
+            ? `${recordAsString(stateModel, "provider")}/${recordAsString(stateModel, "id")}`
+            : undefined) ?? input.modelSelection?.model;
 
         const createdAt = yield* nowIso;
         const session: ProviderSession = {
@@ -995,9 +989,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           lastRunError: undefined,
           currentModelSlug: initialModelSlug,
           thinkingLevel:
-            typeof stateRecord.thinkingLevel === "string"
-              ? stateRecord.thinkingLevel
-              : undefined,
+            typeof stateRecord.thinkingLevel === "string" ? stateRecord.thinkingLevel : undefined,
           pendingDialogs: new Map(),
           nextMessageItem: 0,
           cumulativeTokens: { total: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -1138,36 +1130,38 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       },
     );
 
-    const respondToRequest: PiAdapterShape["respondToRequest"] = Effect.fn(
-      "respondToRequest",
-    )(function* (threadId, requestId, decision) {
-      const context = yield* ensureSessionContext(threadId);
-      const dialog = context.pendingDialogs.get(requestId);
-      if (!dialog) {
-        return yield* new ProviderAdapterRequestError({
-          provider: PROVIDER,
-          method: "respondToRequest",
-          detail: `Unknown pending pi dialog request: ${requestId}`,
+    const respondToRequest: PiAdapterShape["respondToRequest"] = Effect.fn("respondToRequest")(
+      function* (threadId, requestId, decision) {
+        const context = yield* ensureSessionContext(threadId);
+        const dialog = context.pendingDialogs.get(requestId);
+        if (!dialog) {
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "respondToRequest",
+            detail: `Unknown pending pi dialog request: ${requestId}`,
+          });
+        }
+        context.pendingDialogs.delete(requestId);
+        const confirmed = decision === "accept" || decision === "acceptForSession";
+        yield* context.connection
+          .write({
+            type: "extension_ui_response",
+            id: dialog.dialogId,
+            confirmed,
+          })
+          .pipe(Effect.mapError(toRequestError("respondToRequest.write")));
+        yield* emit({
+          ...(yield* stampEvent(
+            yield* buildEventBase({ threadId, requestId, turnId: context.activeTurnId }),
+          )),
+          type: "request.resolved",
+          payload: {
+            requestType: "unknown",
+            decision: confirmed ? "accept" : "decline",
+          },
         });
-      }
-      context.pendingDialogs.delete(requestId);
-      const confirmed = decision === "accept" || decision === "acceptForSession";
-      yield* context.connection.write({
-        type: "extension_ui_response",
-        id: dialog.dialogId,
-        confirmed,
-      }).pipe(Effect.mapError(toRequestError("respondToRequest.write")));
-      yield* emit({
-        ...(yield* stampEvent(
-          yield* buildEventBase({ threadId, requestId, turnId: context.activeTurnId }),
-        )),
-        type: "request.resolved",
-        payload: {
-          requestType: "unknown",
-          decision: confirmed ? "accept" : "decline",
-        },
-      });
-    });
+      },
+    );
 
     const respondToUserInput: PiAdapterShape["respondToUserInput"] = Effect.fn(
       "respondToUserInput",
@@ -1188,11 +1182,13 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           : Object.values(answers).find((value) => typeof value === "string");
       const response: PiRpcCommand =
         typeof answer === "string" ? { value: answer } : { cancelled: true };
-      yield* context.connection.write({
-        type: "extension_ui_response",
-        id: dialog.dialogId,
-        ...response,
-      }).pipe(Effect.mapError(toRequestError("respondToUserInput.write")));
+      yield* context.connection
+        .write({
+          type: "extension_ui_response",
+          id: dialog.dialogId,
+          ...response,
+        })
+        .pipe(Effect.mapError(toRequestError("respondToUserInput.write")));
       yield* emit({
         ...(yield* stampEvent(
           yield* buildEventBase({ threadId, requestId, turnId: context.activeTurnId }),
@@ -1234,18 +1230,16 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
     const hasSession: PiAdapterShape["hasSession"] = (threadId) =>
       Effect.sync(() => sessions.has(threadId));
 
-    const readThread: PiAdapterShape["readThread"] = Effect.fn("readThread")(
-      function* (threadId) {
-        const context = yield* ensureSessionContext(threadId);
-        const data = yield* context.connection
-          .send({ type: "get_entries" })
-          .pipe(Effect.mapError(toRequestError("readThread")));
-        return {
-          threadId,
-          turns: piEntriesToTurns(asRecord(data)?.entries),
-        };
-      },
-    );
+    const readThread: PiAdapterShape["readThread"] = Effect.fn("readThread")(function* (threadId) {
+      const context = yield* ensureSessionContext(threadId);
+      const data = yield* context.connection
+        .send({ type: "get_entries" })
+        .pipe(Effect.mapError(toRequestError("readThread")));
+      return {
+        threadId,
+        turns: piEntriesToTurns(asRecord(data)?.entries),
+      };
+    });
 
     const rollbackThread: PiAdapterShape["rollbackThread"] = Effect.fn("rollbackThread")(
       function* (threadId, numTurns) {
