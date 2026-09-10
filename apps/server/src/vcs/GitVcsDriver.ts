@@ -497,7 +497,27 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
     "detectRepository",
   )(function* (cwd) {
     if (!(yield* isInsideWorkTree(cwd))) {
-      return null;
+      // A worktree container can point .git at .bare without being a checkout.
+      const bare = yield* gitCommand(
+        vcsProcess,
+        "GitVcsDriver.detectRepository.bare",
+        cwd,
+        ["rev-parse", "--is-bare-repository"],
+        { allowNonZeroExit: true, timeoutMs: 5_000, maxOutputBytes: 4_096 },
+      );
+      if (bare.exitCode !== 0 || bare.stdout.trim() !== "true") {
+        return null;
+      }
+      const gitDir = yield* gitCommand(vcsProcess, "GitVcsDriver.detectRepository.bareRoot", cwd, [
+        "rev-parse",
+        "--absolute-git-dir",
+      ]);
+      return {
+        kind: "git" as const,
+        rootPath: path.resolve(cwd),
+        metadataPath: gitDir.stdout.trim(),
+        freshness: yield* nowFreshness(),
+      };
     }
 
     const root = yield* gitCommand(vcsProcess, "GitVcsDriver.detectRepository.root", cwd, [

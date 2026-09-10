@@ -11,6 +11,8 @@ import { GitCommandError } from "@t3tools/contracts";
 import * as ServerConfig from "../config.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
 import * as VcsProcess from "./VcsProcess.ts";
+import * as VcsDriverRegistry from "./VcsDriverRegistry.ts";
+import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
 import { runVcsDriverContractSuite } from "./testing/VcsDriverContractHarness.ts";
 
 const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
@@ -112,3 +114,75 @@ it.effect("GitVcsDriver forwards execute env to the VCS process", () => {
     ),
   );
 });
+
+for (const usePointer of [true, false]) {
+  it.effect(
+    `supports a bare repository ${usePointer ? "through a .git pointer" : "directly"}`,
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-bare-workspace-" });
+        const barePath = path.join(root, ".bare");
+        yield* runGit(root, ["init", "--bare", "--initial-branch=main", barePath]);
+        if (usePointer) {
+          yield* fs.writeFileString(path.join(root, ".git"), "gitdir: ./.bare\n");
+        }
+        const cwd = usePointer ? root : barePath;
+        yield* runGit(cwd, ["config", "user.email", "test@test.com"]);
+        yield* runGit(cwd, ["config", "user.name", "Test"]);
+        // A local remote exercises metadata discovery without network access.
+        yield* runGit(cwd, ["remote", "add", "origin", barePath]);
+        const registry = yield* VcsDriverRegistry.VcsDriverRegistry;
+        const handle = yield* registry.resolve({ cwd });
+        assert.equal(handle.kind, "git");
+        assert.equal(handle.repository.rootPath, cwd);
+        assert.equal(handle.repository.metadataPath, barePath);
+        assert.equal(yield* handle.driver.isInsideWorkTree(cwd), false);
+        assert.equal((yield* handle.driver.listRemotes(cwd)).remotes[0]?.name, "origin");
+
+        const checkpoints = yield* CheckpointStore.CheckpointStore;
+        assert.equal(yield* checkpoints.isGitRepository(cwd), false);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const status = yield* driver.statusDetailsLocal(cwd);
+        assert.equal(status.isRepo, true);
+        assert.equal(status.hasOriginRemote, true);
+        assert.equal(status.branch, null);
+        assert.equal(status.hasWorkingTreeChanges, false);
+
+        const mainPath = path.join(root, "main");
+        yield* runGit(root, ["init", "--initial-branch=main", mainPath]);
+        yield* runGit(mainPath, ["config", "user.email", "test@test.com"]);
+        yield* runGit(mainPath, ["config", "user.name", "Test"]);
+        yield* fs.writeFileString(path.join(mainPath, "README.md"), "hello\n");
+        yield* runGit(mainPath, ["add", "README.md"]);
+        yield* runGit(mainPath, ["commit", "-m", "initial"]);
+        yield* runGit(cwd, ["fetch", mainPath, "main:main"]);
+        yield* fs.remove(mainPath, { recursive: true });
+        yield* runGit(cwd, ["worktree", "add", mainPath, "main"]);
+        const refs = yield* driver.listRefs({ cwd });
+        assert.equal(refs.isRepo, true);
+        assert.equal(refs.refs.find((ref) => ref.name === "main")?.worktreePath, mainPath);
+        assert.equal(yield* checkpoints.isGitRepository(mainPath), true);
+        assert.equal((yield* registry.resolve({ cwd: mainPath })).repository.rootPath, mainPath);
+
+        const featurePath = path.join(root, "feature");
+        yield* driver.createWorktree({
+          cwd,
+          path: featurePath,
+          refName: "main",
+          newRefName: "feature",
+        });
+        assert.equal(yield* fs.readFileString(path.join(featurePath, "README.md")), "hello\n");
+        yield* driver.removeWorktree({ cwd, path: featurePath });
+        assert.equal(yield* fs.exists(featurePath), false);
+      }).pipe(
+        Effect.provide(
+          CheckpointStore.layer.pipe(
+            Layer.provideMerge(VcsDriverRegistry.layer),
+            Layer.provideMerge(GitContractLayer),
+          ),
+        ),
+      ),
+  );
+}

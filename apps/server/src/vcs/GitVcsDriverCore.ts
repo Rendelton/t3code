@@ -1642,6 +1642,22 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       if (isNonRepositoryGitStderr(statusResult.stderr)) {
         return NON_REPOSITORY_STATUS_DETAILS;
       }
+      const bare = yield* executeGitWithStableDiagnostics(
+        "GitVcsDriver.statusDetails.bare",
+        cwd,
+        ["rev-parse", "--is-bare-repository"],
+        { allowNonZeroExit: true },
+      );
+      if (bare.exitCode === 0 && bare.stdout.trim() === "true") {
+        const remotes = yield* runGitStdout("GitVcsDriver.statusDetails.bareRemotes", cwd, [
+          "remote",
+        ]);
+        return {
+          ...NON_REPOSITORY_STATUS_DETAILS,
+          isRepo: true,
+          hasOriginRemote: parseRemoteNames(remotes).includes("origin"),
+        };
+      }
       return yield* new GitCommandError({
         ...gitCommandContext({
           operation: "GitVcsDriver.statusDetails.status",

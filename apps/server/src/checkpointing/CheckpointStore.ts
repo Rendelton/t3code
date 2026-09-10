@@ -120,7 +120,11 @@ export const make = Effect.gen(function* () {
   const isGitRepository: CheckpointStore["Service"]["isGitRepository"] = (cwd) =>
     vcsRegistry
       .detect({ cwd, requestedKind: "git" })
-      .pipe(Effect.map((repository) => repository !== null));
+      .pipe(
+        Effect.flatMap((repository) =>
+          repository ? repository.driver.isInsideWorkTree(cwd) : Effect.succeed(false),
+        ),
+      );
 
   const captureCheckpoint: CheckpointStore["Service"]["captureCheckpoint"] = Effect.fn(
     "captureCheckpoint",
