@@ -1179,6 +1179,84 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
         });
       });
 
+      describe("pi model inventories", () => {
+        const previousProvider = {
+          instanceId: ProviderInstanceId.make("pi"),
+          driver: ProviderDriverKind.make("pi"),
+          status: "ready",
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated", type: "pi" },
+          checkedAt: "2026-09-11T00:00:00.000Z",
+          version: "0.85.1",
+          models: [
+            {
+              slug: "glm/glm-5.2",
+              name: "GLM-5.2 FP8 (Local vLLM)",
+              isCustom: false,
+              capabilities: null,
+            },
+            {
+              slug: "glm53flash/zai-org/GLM-5.3-Flash",
+              name: "GLM-5.3-Flash (Local vLLM)",
+              isCustom: false,
+              capabilities: null,
+            },
+          ],
+          slashCommands: [],
+          skills: [],
+        } as const satisfies ServerProvider;
+        const refreshedProvider = {
+          ...previousProvider,
+          checkedAt: "2026-09-11T00:01:00.000Z",
+          models: [
+            {
+              slug: "glm/glm-5.2",
+              name: "GLM-5.2 FP8 (Local vLLM)",
+              isCustom: false,
+              capabilities: null,
+            },
+            {
+              slug: "glm53flash/GLM-5.3-Flash",
+              name: "GLM-5.3-Flash (Local vLLM)",
+              isCustom: false,
+              capabilities: null,
+            },
+          ],
+        } satisfies ServerProvider;
+
+        it("drops renamed models missing from a successful refresh", () => {
+          const afterRefresh = mergeProviderSnapshot(previousProvider, refreshedProvider);
+          assert.deepStrictEqual(afterRefresh.models, refreshedProvider.models);
+        });
+
+        it("retains models when the probe fails or auth lapses", () => {
+          const afterRefresh = mergeProviderSnapshot(previousProvider, refreshedProvider);
+          const failedProvider = {
+            ...refreshedProvider,
+            status: "error",
+            auth: { status: "unknown", type: "pi" },
+            models: [],
+            message: "pi CLI is installed but failed to run.",
+          } satisfies ServerProvider;
+          assert.deepStrictEqual(
+            mergeProviderSnapshot(afterRefresh, failedProvider).models,
+            refreshedProvider.models,
+          );
+          const authLapsedProvider = {
+            ...refreshedProvider,
+            status: "warning",
+            auth: { status: "unknown", type: "pi" },
+            models: [],
+            message: "pi is available, but no models have valid authentication.",
+          } satisfies ServerProvider;
+          assert.deepStrictEqual(
+            mergeProviderSnapshot(afterRefresh, authLapsedProvider).models,
+            refreshedProvider.models,
+          );
+        });
+      });
+
       describe("Antigravity saved account", () => {
         const signedIn = {
           instanceId: ProviderInstanceId.make("antigravity-personal"),

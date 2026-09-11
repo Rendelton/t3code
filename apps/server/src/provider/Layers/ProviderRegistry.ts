@@ -103,6 +103,14 @@ export function upsertProviderWorkspaceSnapshot(
 const shouldRetainMissingProviderModels = (provider: ServerProvider): boolean => {
   const isAntigravity = provider.driver === ProviderDriverKind.make("antigravity");
   const isCodex = provider.driver === ProviderDriverKind.make("codex");
+  if (provider.driver === ProviderDriverKind.make("pi")) {
+    // pi's inventory probe returns the complete catalog whenever it succeeds, so
+    // a ready snapshot is authoritative and removed/renamed entries must prune —
+    // otherwise they ride along from the previous snapshot forever, surviving
+    // even restarts via the on-disk cache. Retain only when the probe failed or
+    // returned nothing (auth lapse), which would otherwise empty the picker.
+    return !(provider.status === "ready" && provider.auth.status === "authenticated");
+  }
   if (!isAntigravity && !isCodex && provider.driver !== ProviderDriverKind.make("opencode")) {
     return true;
   }
