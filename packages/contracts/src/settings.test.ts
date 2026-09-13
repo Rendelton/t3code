@@ -20,6 +20,35 @@ const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
 
+describe("ServerSettings default permissions", () => {
+  it("keeps full access for settings saved before a default was configured", () => {
+    expect(decodeServerSettings({}).defaultRuntimeMode).toBe("full-access");
+    expect(DEFAULT_SERVER_SETTINGS.defaultRuntimeMode).toBe("full-access");
+  });
+
+  it.each(["approval-required", "auto-accept-edits", "auto", "full-access"])(
+    "round-trips %s as an environment default and project override",
+    (defaultRuntimeMode) => {
+      const input = {
+        defaultRuntimeMode,
+        projectSettingsOverrides: { project: { defaultRuntimeMode } },
+      };
+      expect(encodeServerSettings(decodeServerSettings(input))).toMatchObject(input);
+      expect(decodeServerSettingsPatch(input)).toEqual(input);
+    },
+  );
+
+  it("rejects unsupported permission defaults", () => {
+    expect(() => decodeServerSettings({ defaultRuntimeMode: "unsupported" })).toThrow();
+    expect(() => decodeServerSettingsPatch({ defaultRuntimeMode: "unsupported" })).toThrow();
+    expect(() =>
+      decodeServerSettingsPatch({
+        projectSettingsOverrides: { project: { defaultRuntimeMode: "unsupported" } },
+      }),
+    ).toThrow();
+  });
+});
+
 describe("ServerSettings usage price overrides", () => {
   const prices = { inputCostPerMillionTokens: 2, outputCostPerMillionTokens: 8 };
 
@@ -132,6 +161,86 @@ describe("ClaudeSettings auto-compaction", () => {
     expect(
       decodeServerSettingsPatch({ providers: { claudeAgent: { autoCompactWindow: "300000" } } }),
     ).toBeDefined();
+  });
+});
+
+describe("ClientSettings notifications", () => {
+  it("requires opt-in when existing settings omit notification preferences", () => {
+    expect(decodeClientSettings({}).notificationMode).toBe("off");
+    expect(decodeClientSettings({}).inAppNotificationsEnabled).toBe(false);
+    expect(decodeClientSettingsPatch({})).not.toHaveProperty("inAppNotificationsEnabled");
+    expect(decodeClientSettingsPatch({})).not.toHaveProperty("notificationMode");
+  });
+
+  it.each([true, false])(
+    "round-trips in-app notifications set to %s",
+    (inAppNotificationsEnabled) => {
+      const settings = decodeClientSettings({ inAppNotificationsEnabled });
+      expect(encodeClientSettings(settings).inAppNotificationsEnabled).toBe(
+        inAppNotificationsEnabled,
+      );
+      expect(
+        decodeClientSettingsPatch({ inAppNotificationsEnabled }).inAppNotificationsEnabled,
+      ).toBe(inAppNotificationsEnabled);
+    },
+  );
+
+  it.each(["true", 1, null])(
+    "rejects an invalid in-app notification preference %s",
+    (inAppNotificationsEnabled) => {
+      expect(() => decodeClientSettings({ inAppNotificationsEnabled })).toThrow();
+      expect(() => decodeClientSettingsPatch({ inAppNotificationsEnabled })).toThrow();
+    },
+  );
+
+  it.each(["off", "notifications", "sound", "notifications-and-sound"])(
+    "round-trips the %s mode",
+    (notificationMode) => {
+      const settings = decodeClientSettings({ notificationMode });
+      expect(encodeClientSettings(settings).notificationMode).toBe(notificationMode);
+      expect(decodeClientSettingsPatch({ notificationMode }).notificationMode).toBe(
+        notificationMode,
+      );
+    },
+  );
+
+  it.each(["always", true, null])(
+    "rejects unsupported notification mode %s",
+    (notificationMode) => {
+      expect(() => decodeClientSettings({ notificationMode })).toThrow();
+      expect(() => decodeClientSettingsPatch({ notificationMode })).toThrow();
+    },
+  );
+});
+
+describe("ClientSettings default diff file state", () => {
+  it("keeps files expanded when existing settings omit the preference", () => {
+    expect(decodeClientSettings({}).diffFilesCollapsed).toBe(false);
+  });
+
+  it.each([true, false])("preserves a saved collapsed preference of %s", (diffFilesCollapsed) => {
+    const settings = decodeClientSettings({ diffFilesCollapsed });
+    expect(encodeClientSettings(settings).diffFilesCollapsed).toBe(diffFilesCollapsed);
+    expect(decodeClientSettingsPatch({ diffFilesCollapsed }).diffFilesCollapsed).toBe(
+      diffFilesCollapsed,
+    );
+  });
+});
+
+describe("ClientSettings diff colors", () => {
+  it("keeps red and green for existing settings without a saved palette", () => {
+    expect(decodeClientSettings({}).diffColorScheme).toBe("red-green");
+  });
+
+  it.each(["red-green", "blue-orange"])("round-trips the %s palette", (diffColorScheme) => {
+    const settings = decodeClientSettings({ diffColorScheme });
+    expect(encodeClientSettings(settings).diffColorScheme).toBe(diffColorScheme);
+    expect(decodeClientSettingsPatch({ diffColorScheme }).diffColorScheme).toBe(diffColorScheme);
+  });
+
+  it("rejects unsupported palettes", () => {
+    expect(() => decodeClientSettings({ diffColorScheme: "purple-yellow" })).toThrow();
+    expect(() => decodeClientSettingsPatch({ diffColorScheme: "purple-yellow" })).toThrow();
   });
 });
 
@@ -373,7 +482,18 @@ describe("ClientSettings environment identification", () => {
 
 describe("ClientSettings sidebar", () => {
   it("defaults to the current sidebar", () => {
-    expect(decodeClientSettings({}).legacySidebarEnabled).toBe(false);
+    const settings = decodeClientSettings({});
+    expect(settings.legacySidebarEnabled).toBe(false);
+    expect(settings.sidebarCompactThreadRows).toBe(false);
+  });
+
+  it("preserves an explicit compact thread row preference", () => {
+    expect(decodeClientSettings({ sidebarCompactThreadRows: true }).sidebarCompactThreadRows).toBe(
+      true,
+    );
+    expect(
+      decodeClientSettingsPatch({ sidebarCompactThreadRows: true }).sidebarCompactThreadRows,
+    ).toBe(true);
   });
 
   it("drops the retired sidebar v2 beta keys, resetting everyone to the default", () => {
@@ -741,4 +861,17 @@ describe("ServerSettings environment icon", () => {
     const linuxSettings = decodeServerSettings({ environmentIcon: "linux" });
     expect(encodeServerSettings(linuxSettings).environmentIcon).toBe("linux");
   });
+});
+
+const decodeDeviceHostSettings = Schema.decodeSync(ServerSettings);
+
+it("validates remote device hosts and rejects ambiguous host ids", () => {
+  const host = { id: "mini", label: "Mac mini", target: "user@mini", port: 2222 };
+  expect(decodeDeviceHostSettings({ deviceHosts: [host] }).deviceHosts).toEqual([host]);
+  expect(() => decodeDeviceHostSettings({ deviceHosts: [host, host] })).toThrow();
+  expect(() => decodeDeviceHostSettings({ deviceHosts: [{ ...host, id: "local" }] })).toThrow();
+  expect(() =>
+    decodeDeviceHostSettings({ deviceHosts: [{ ...host, target: "-oProxyCommand=bad" }] }),
+  ).toThrow();
+  expect(() => decodeDeviceHostSettings({ deviceHosts: [{ ...host, port: 0 }] })).toThrow();
 });
