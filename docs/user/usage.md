@@ -2,7 +2,7 @@
 
 ## Understand your usage
 
-**Usage** combines Codex, Claude Code, and Grok Build session history from your connected
+**Usage** combines Codex, Claude Code, Grok Build, and Pi session history from your connected
 environments. It shows token use, cache savings, model breakdowns, and estimated API-equivalent
 cost. These estimates are not your subscription bill.
 
@@ -11,7 +11,11 @@ record are missing from the totals.
 
 Usage includes each configured account's history, including disabled accounts. Custom homes follow
 the account's home setting or its `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, or `GROK_HOME` environment
-variable. Use absolute paths or `~/` paths in the account's environment settings; relative
+variable. Pi follows its agent directory setting or `PI_CODING_AGENT_DIR`; a
+`PI_CODING_AGENT_SESSION_DIR` override takes precedence for session storage. Pi's saved costs
+include custom model rates from `models.json`, including zero-cost models. Tool and summary
+usage is grouped separately because those records do not identify a model.
+Use absolute paths or `~/` paths in the account's environment settings; relative
 environment paths depend on each project's working directory and cannot be reliably discovered
 by Usage. Accounts sharing a history directory count once.
 

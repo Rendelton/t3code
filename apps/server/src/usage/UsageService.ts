@@ -2,7 +2,7 @@
  * UsageService - scans provider transcripts and returns priced usage buckets.
  *
  * The scan reads the provider CLIs' own session files (Claude Code, Codex, and
- * Grok Build) rather than T3 Code's orchestration projections, so usage covers
+ * Grok Build, and Pi) rather than T3 Code's orchestration projections, so usage covers
  * turns driven outside T3 Code too. This is the approach `ccusage` takes.
  *
  * Transcripts are append-only, so parsed records are memoised per file by
@@ -17,6 +17,7 @@ import * as NodeOS from "node:os";
 import {
   ClaudeSettings,
   CodexSettings,
+  PiSettings,
   type ProviderInstanceConfig,
   USAGE_CONTRACT_VERSION,
   type ServerSettings as ServerSettingsValue,
@@ -84,6 +85,7 @@ const CACHE_RETENTION_DAYS = 90;
 
 const decodeCodexSettings = Schema.decodeOption(CodexSettings);
 const decodeClaudeSettings = Schema.decodeOption(ClaudeSettings);
+const decodePiSettings = Schema.decodeOption(PiSettings);
 
 /** On-disk shape of the rate snapshot. */
 const RatesCacheFile = Schema.Struct({
@@ -244,7 +246,7 @@ export const make = Effect.gen(function* () {
   ) {
     const dirs: Array<{ provider: UsageProviderKind; dir: string; fileName?: string }> = [];
     const seen = new Set<string>();
-    for (const driver of ["claudeAgent", "codex", "grok"] as const) {
+    for (const driver of ["claudeAgent", "codex", "grok", "pi"] as const) {
       // Disabled accounts still have history. Explicit default slots replace
       // the legacy settings, just as they do in the provider registry.
       const instances: Array<Pick<ProviderInstanceConfig, "config" | "environment">> =
@@ -274,12 +276,23 @@ export const make = Effect.gen(function* () {
           home = configured
             ? expandHomePath(configured)
             : environment.CLAUDE_CONFIG_DIR?.trim() || path.join(NodeOS.homedir(), ".claude");
+        } else if (driver === "pi") {
+          const decoded = decodePiSettings(instance.config ?? {});
+          if (Option.isNone(decoded)) continue;
+          home = expandHomePath(
+            decoded.value.agentDir.trim() ||
+              environment.PI_CODING_AGENT_DIR?.trim() ||
+              path.join(NodeOS.homedir(), ".pi", "agent"),
+          );
         } else {
           home = expandHomePath(
             environment.GROK_HOME?.trim() || path.join(NodeOS.homedir(), ".grok"),
           );
         }
-        const directory = path.resolve(home, provider === "claude" ? "projects" : "sessions");
+        const directory =
+          provider === "pi" && environment.PI_CODING_AGENT_SESSION_DIR?.trim()
+            ? path.resolve(expandHomePath(environment.PI_CODING_AGENT_SESSION_DIR.trim()))
+            : path.resolve(home, provider === "claude" ? "projects" : "sessions");
         // Account aliases and Codex auth overlays can share the same history.
         const dir = yield* fileSystem
           .realPath(directory)

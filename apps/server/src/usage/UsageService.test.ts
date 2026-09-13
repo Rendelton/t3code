@@ -100,6 +100,7 @@ const serviceLayers = (input: {
     Layer.provideMerge(
       Layer.succeed(HostProcessEnvironment, {
         GROK_HOME: NodePath.join(input.home, "grok"),
+        PI_CODING_AGENT_DIR: NodePath.join(input.home, "pi"),
         ...input.environment,
       }),
     ),
@@ -110,6 +111,77 @@ function totalOutputTokens(summary: { buckets: readonly { totals: { outputTokens
 }
 
 describe("UsageService", () => {
+  it.live(
+    "reads Pi custom homes, deduplicates forks, and preserves reported pricing on refresh",
+    () =>
+      Effect.gen(function* () {
+        const { settings, home } = yield* setup;
+        const agentDir = NodePath.join(home, "pi-custom");
+        const sessions = NodePath.join(agentDir, "sessions", "project");
+        const line = (id: string, cost: number) =>
+          JSON.stringify({
+            type: "message",
+            id,
+            timestamp: "2026-08-01T10:00:00Z",
+            message: {
+              role: "assistant",
+              model: "Qwen3.8-27B-4bit",
+              usage: { input: 1867, output: 344, cacheRead: 4096, cost: { total: cost } },
+            },
+          }) + "\n";
+        yield* Effect.promise(async () => {
+          await NodeFSP.mkdir(sessions, { recursive: true });
+          await NodeFSP.writeFile(NodePath.join(sessions, "original.jsonl"), line("a", 0.002));
+          await NodeFSP.writeFile(NodePath.join(sessions, "fork.jsonl"), line("a", 0.002));
+        });
+        const service = yield* UsageService.make.pipe(
+          Effect.provide(
+            serviceLayers({
+              prefix: "usage-pi-test",
+              home,
+              settings: {
+                ...settings,
+                providerInstances: {
+                  [ProviderInstanceId.make("pi-work")]: {
+                    driver: ProviderDriverKind.make("pi"),
+                    enabled: false,
+                    config: { agentDir },
+                  },
+                  [ProviderInstanceId.make("pi-session-dir")]: {
+                    driver: ProviderDriverKind.make("pi"),
+                    config: { agentDir: NodePath.join(home, "unused") },
+                    environment: [
+                      {
+                        name: "PI_CODING_AGENT_SESSION_DIR",
+                        value: NodePath.join(agentDir, "sessions"),
+                        sensitive: false,
+                      },
+                    ],
+                  },
+                  [ProviderInstanceId.make("pi-alias")]: {
+                    driver: ProviderDriverKind.make("pi"),
+                    environment: [
+                      { name: "PI_CODING_AGENT_DIR", value: agentDir, sensitive: false },
+                    ],
+                  },
+                },
+              },
+            }),
+          ),
+        );
+        const summary = yield* service.readSummary(WINDOW);
+        assert.strictEqual(totalOutputTokens(summary), 344);
+        assert.strictEqual(summary.sources.filter((s) => s.status === "ok").length, 2);
+        assert.strictEqual(summary.buckets[0]?.costUsd, 0.002);
+        assert.strictEqual(summary.buckets[0]?.costSource, "providerReported");
+        yield* Effect.promise(() =>
+          NodeFSP.appendFile(NodePath.join(sessions, "original.jsonl"), line("b", 0)),
+        );
+        const refreshed = yield* service.readSummary(WINDOW);
+        assert.strictEqual(totalOutputTokens(refreshed), 688);
+        assert.strictEqual(refreshed.buckets[0]?.costUsd, 0.002);
+      }).pipe(Effect.scoped),
+  );
   it.live("reads configured and disabled accounts once across shared and aliased homes", () =>
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;
