@@ -6,7 +6,6 @@ import {
   TerminalIcon,
 } from "lucide-react";
 import { useAtomValue } from "@effect/atom-react";
-import { useLocation } from "@tanstack/react-router";
 import { Atom } from "effect/unstable/reactivity";
 import {
   type KeyboardEvent,
@@ -42,7 +41,7 @@ import {
   type EnvironmentId,
   resolveEnvironmentMachineKind,
 } from "@t3tools/contracts";
-import { connectionStatusText, connectionStatusTitle } from "@t3tools/client-runtime/connection";
+import { connectionStatusText } from "@t3tools/client-runtime/connection";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -52,6 +51,7 @@ import * as Option from "effect/Option";
 
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { cn } from "../../lib/utils";
+import { isLocalEnvironmentDisabled } from "../../localEnvironment";
 import { formatElapsedDurationLabel, formatExpiresInLabel } from "../../timestampFormat";
 import { resolveDesktopPairingUrl, resolveHostedPairingUrl } from "./pairingUrls";
 import {
@@ -66,9 +66,16 @@ import {
   SettingsSection,
   useRelativeTimeTick,
 } from "./settingsLayout";
+import { LocalEnvironmentSetting } from "./LocalEnvironmentSetting";
 import { searchableSetting } from "./settingsSearch";
-import { EnvironmentIconPicker } from "./EnvironmentIconPicker";
-import { LoadBalancingPreference, LoadBalancingSettings } from "./LoadBalancingSettings";
+import { EnvironmentIconMenu } from "./EnvironmentIconPicker";
+import {
+  EnvironmentRow,
+  environmentTransportLabel,
+  formatDesktopSshTarget,
+} from "./EnvironmentRow";
+import { FoldedSettingsSection } from "./FoldedSettingsSection";
+import { LoadBalancingSettings } from "./LoadBalancingSettings";
 import { GitHubRoutingSettings } from "./GitHubRoutingSettings";
 import { Input } from "../ui/input";
 import { CommandShortcut } from "../ui/command";
@@ -106,7 +113,7 @@ import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { QRCodeSvg } from "../ui/qr-code";
 import { Spinner } from "../ui/spinner";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
-import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
+import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
 import { Switch } from "../ui/switch";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -154,11 +161,12 @@ import {
   type EnvironmentPresentation,
   useEnvironments,
   usePrimaryEnvironment,
+  useRelayEnvironmentDiscovery,
 } from "~/state/environments";
 import { requestConfirmDialog } from "~/confirmDialog";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { primaryServerKeybindingsAtom, serverEnvironment } from "~/state/server";
-import { ConnectionStatusDot, connectionPhaseDotClassName } from "../ConnectionStatusDot";
+import { ConnectionStatusDot } from "../ConnectionStatusDot";
 import {
   ServerUpdateAction,
   ServerUpdateProgress,
@@ -286,11 +294,6 @@ function AccessScopeSummary({
       </PopoverPopup>
     </Popover>
   );
-}
-
-function formatDesktopSshTarget(target: DesktopSshEnvironmentTarget): string {
-  const authority = target.username ? `${target.username}@${target.hostname}` : target.hostname;
-  return target.port ? `${authority}:${target.port}` : authority;
 }
 
 function parseManualDesktopSshTarget(input: {
@@ -434,6 +437,20 @@ function sortDesktopPairingLinks(links: ReadonlyArray<ServerPairingLinkRecord>) 
   return [...links].toSorted(
     (left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime(),
   );
+}
+
+/** Closed-header summary for the Authorized clients fold. */
+function summarizeAuthorizedClients(
+  sessions: ReadonlyArray<ServerClientSessionRecord>,
+  links: ReadonlyArray<ServerPairingLinkRecord>,
+): string {
+  const parts = [
+    `${sessions.length} ${sessions.length === 1 ? "client" : "clients"}`,
+    links.length > 0
+      ? `${links.length} ${links.length === 1 ? "pairing link" : "pairing links"}`
+      : null,
+  ];
+  return parts.filter((part): part is string => part !== null).join(" · ");
 }
 
 function sortDesktopClientSessions(sessions: ReadonlyArray<ServerClientSessionRecord>) {
@@ -811,12 +828,11 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
                     : "Clipboard copy is unavailable here. Manually copy this code into another client."}
                 </DialogDescription>
               </DialogHeader>
-              <DialogPanel className="space-y-4">
+              <DialogPanel>
                 <Textarea
                   readOnly
                   value={revealValue}
                   rows={isRevealValueUrl ? 4 : 3}
-                  className="text-xs leading-relaxed"
                   onFocus={(event) => event.currentTarget.select()}
                   onClick={(event) => event.currentTarget.select()}
                 />
@@ -908,9 +924,7 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
                     </code>
                   }
                 />
-                <TooltipPopup side="top" className="max-w-80 break-all">
-                  {qrPairingUrl}
-                </TooltipPopup>
+                <TooltipPopup side="top">{qrPairingUrl}</TooltipPopup>
               </Tooltip>
               <Button
                 size="xs"
@@ -1118,7 +1132,7 @@ const AuthorizedClientsHeaderAction = memo(function AuthorizedClientsHeaderActio
               authorized client.
             </DialogDescription>
           </DialogHeader>
-          <DialogPanel className="space-y-5">
+          <DialogPanel>
             <label className="block">
               <span className="mb-1.5 block text-xs font-medium text-foreground">
                 Client label (optional)
@@ -1317,9 +1331,7 @@ const AdvertisedEndpointListRow = memo(function AdvertisedEndpointListRow({
                   </p>
                 }
               />
-              <TooltipPopup side="top" className="max-w-80">
-                {endpoint.httpBaseUrl}
-              </TooltipPopup>
+              <TooltipPopup side="top">{endpoint.httpBaseUrl}</TooltipPopup>
             </Tooltip>
           ) : null}
           {!isAvailable ? (
@@ -1419,6 +1431,48 @@ type SavedBackendListRowProps = {
   onRemove: (environment: EnvironmentPresentation) => void;
 };
 
+/**
+ * Status word for a row subtitle: "Reconnecting: <reason>" instead of the
+ * long-form sentence, since the row has one line and the full text is one
+ * hover away.
+ */
+function savedBackendStatus(environment: EnvironmentPresentation): {
+  readonly text: string;
+  readonly tone: "muted" | "error";
+} {
+  if (!environment.entry.enabled && environment.connection.phase !== "unsupported")
+    return { text: "Off", tone: "muted" };
+  const { connection } = environment;
+  switch (connection.phase) {
+    case "connected":
+      return { text: "Connected", tone: "muted" };
+    case "connecting":
+      return { text: "Connecting", tone: "muted" };
+    case "reconnecting":
+      return {
+        text: connection.error ? `Reconnecting: ${connection.error}` : "Reconnecting",
+        tone: "error",
+      };
+    // Not a failure: the machine is fine, this build just cannot talk to it.
+    case "unsupported":
+      return { text: "Client not supported", tone: "muted" };
+    case "error":
+      return {
+        text: connection.error ? `Connection failed: ${connection.error}` : "Connection failed",
+        tone: "error",
+      };
+    case "offline":
+      return { text: "Offline", tone: "muted" };
+    case "available":
+      return { text: "Not connected", tone: "muted" };
+  }
+}
+
+/**
+ * One added machine in the Environments list. The switch is the main action;
+ * the update icon appears only when that machine can take an update; the
+ * row menu holds the icon override, trace ID, and removal.
+ */
 function SavedBackendListRow({
   environment,
   removingEnvironmentId,
@@ -1426,20 +1480,10 @@ function SavedBackendListRow({
   onRemove,
 }: SavedBackendListRowProps) {
   const environmentId = environment.environmentId;
-  const enabled = environment.entry.enabled;
-  const connectionState = environment.connection.phase;
-  const isConnected = connectionState === "connected";
+  const unsupported = environment.connection.phase === "unsupported";
+  const enabled = environment.entry.enabled && !unsupported;
+  const isConnected = environment.connection.phase === "connected";
   const isRemoving = removingEnvironmentId === environmentId;
-  const stateDotClassName = !enabled
-    ? "bg-muted-foreground/40"
-    : connectionState === "connected"
-      ? "bg-success"
-      : connectionState === "connecting" || connectionState === "reconnecting"
-        ? "bg-warning"
-        : connectionState === "error"
-          ? "bg-destructive"
-          : "bg-muted-foreground/40";
-  const statusTooltip = enabled ? connectionStatusText(environment.connection) : "Off";
   const errorTraceId = environment.connection.traceId;
   const { copyToClipboard: copyTraceIdToClipboard } = useCopyToClipboard<{ traceId: string }>({
     target: "trace ID",
@@ -1470,25 +1514,35 @@ function SavedBackendListRow({
   const serverUpdateState = useAtomValue(serverEnvironment.updateStateAtom(environmentId));
   const resumingServerUpdate =
     serverUpdateState.status === "running" && serverUpdateState.stage === "resuming";
-  const sshTarget =
-    environment.entry.target._tag === "SshConnectionTarget" &&
-    Option.isSome(environment.entry.profile) &&
-    environment.entry.profile.value._tag === "SshConnectionProfile"
-      ? environment.entry.profile.value.target
-      : null;
-  const metadataBits = [
-    sshTarget ? `SSH ${formatDesktopSshTarget(sshTarget)}` : null,
-    environment.relayManaged ? "T3 Connect" : null,
-    enabled ? null : "Off",
-  ].filter((value): value is string => value !== null);
+  const status = savedBackendStatus(environment);
+  const serverVersion = environment.serverConfig?.environment.serverVersion ?? null;
+  // A saved T3 Connect machine this device has never reached (unsupported,
+  // or not yet connected) still has a descriptor from relay discovery, so
+  // it can wear its detected glyph instead of the generic server. Discovery
+  // empties its map on every refresh, so hold the last descriptor seen or
+  // the glyph would blink back to the generic one each time.
+  const relayDiscovery = useRelayEnvironmentDiscovery();
+  const discoveredDescriptor = Option.getOrNull(
+    relayDiscovery.environments.get(environmentId)?.status ?? Option.none(),
+  )?.descriptor;
+  const [lastDescriptor, setLastDescriptor] = useState(discoveredDescriptor);
+  if (discoveredDescriptor !== undefined && discoveredDescriptor !== lastDescriptor) {
+    setLastDescriptor(discoveredDescriptor);
+  }
+  const machineKind = resolveEnvironmentMachineKind(
+    environment.serverConfig ??
+      (lastDescriptor === undefined ? null : { environment: lastDescriptor }),
+  );
+  const subtitleText = [
+    environmentTransportLabel(environment),
+    resumingServerUpdate ? "Restarting" : status.text,
+    enabled && versionMismatch ? serverVersion : null,
+  ]
+    .filter((value): value is string => value !== null)
+    .join(" · ");
 
-  // The WSL backend is a desktop-managed local backend (it surfaces as a bearer
-  // environment whose connection id is prefixed "local:"), not a remote
-  // environment you connect to or remove here — its lifecycle is driven by the
-  // WSL on/off + distro picker on this page.
-  const isWslEnvironment = isDesktopLocalConnectionTarget(environment.entry.target);
   // Only a connected, enabled machine can take a remote update; a switched-off
-  // one keeps the "update available" note so the icon is not a surprise later.
+  // one keeps the version note so the icon is not a surprise later.
   const showUpdateAction =
     enabled &&
     isConnected &&
@@ -1496,153 +1550,101 @@ function SavedBackendListRow({
     (serverUpdateState.status === "idle" || serverUpdateState.status === "failed");
 
   return (
-    <div className={cn(ITEM_ROW_CLASSNAME, !enabled && "opacity-60")}>
-      <div className={ITEM_ROW_INNER_CLASSNAME}>
-        <div className="min-w-0 flex-1 space-y-1">
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-            <div className="flex min-h-5 min-w-0 max-w-full items-center gap-1.5">
-              <ConnectionStatusDot
-                tooltipText={statusTooltip}
-                dotClassName={stateDotClassName}
-                pingClassName={
-                  enabled &&
-                  (connectionState === "connecting" || connectionState === "reconnecting")
-                    ? "bg-warning/60 duration-2000"
-                    : null
-                }
+    <EnvironmentRow
+      kind={machineKind}
+      label={environment.label}
+      dimmed={!enabled}
+      subtitle={
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <span
+                className={cn(
+                  "block truncate",
+                  enabled && status.tone === "error" && !resumingServerUpdate && "text-destructive",
+                )}
               />
-              <EnvironmentMachineIcon
-                aria-hidden
-                kind={resolveEnvironmentMachineKind(environment.serverConfig)}
-                className="size-3.5 shrink-0 text-muted-foreground"
-              />
-              <h3 className="min-w-0 truncate text-sm font-medium text-foreground">
-                {environment.label}
-              </h3>
-            </div>
-            {isConnected ? (
-              <div className="w-full sm:w-auto">
-                <EnvironmentIconPicker
-                  environmentId={environmentId}
-                  serverConfig={environment.serverConfig}
-                  size="xs"
-                />
-              </div>
-            ) : null}
+            }
+          >
+            {subtitleText}
+          </TooltipTrigger>
+          <TooltipPopup side="top" className="whitespace-pre-wrap">
+            {unsupported
+              ? (environment.connection.error ?? connectionStatusText(environment.connection))
+              : enabled
+                ? connectionStatusText(environment.connection)
+                : "Switched off"}
+            {versionMismatch
+              ? `\nUpdate available: ${versionMismatch.serverVersion} → ${versionMismatch.clientVersion}`
+              : ""}
+          </TooltipPopup>
+        </Tooltip>
+      }
+      below={
+        serverUpdateState.status !== "idle" ? (
+          <div className="mt-1 max-w-md">
+            <ServerUpdateProgress state={serverUpdateState} />
           </div>
-          {metadataBits.length > 0 ? (
-            <p className="truncate text-xs text-muted-foreground">{metadataBits.join(" · ")}</p>
-          ) : null}
-          {serverUpdateState.status !== "idle" ? (
-            <div className="max-w-md">
-              <ServerUpdateProgress state={serverUpdateState} />
-            </div>
-          ) : versionMismatch ? (
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <button
-                    type="button"
-                    className="w-fit cursor-help rounded-sm text-left text-muted-foreground text-xs"
-                  >
-                    Server update available
-                  </button>
-                }
-              />
-              <TooltipPopup side="top">
-                {versionMismatch.serverVersion} <span aria-hidden="true">→</span>{" "}
-                {versionMismatch.clientVersion}
-              </TooltipPopup>
-            </Tooltip>
-          ) : null}
-          {enabled && environment.connection.error && !resumingServerUpdate ? (
-            <p className="flex min-w-0 items-center gap-2 text-destructive text-xs">
-              <span className="min-w-0 break-words">
-                {connectionStatusText(environment.connection)}
-              </span>
-              {errorTraceId ? (
-                <button
-                  type="button"
-                  className="shrink-0 underline underline-offset-2"
-                  onClick={() => copyTraceId(errorTraceId)}
-                >
-                  Copy trace ID
-                </button>
-              ) : null}
-            </p>
-          ) : null}
-        </div>
-        <div className="flex w-full shrink-0 items-center gap-1 sm:w-auto sm:justify-end">
-          {showUpdateAction ? (
-            <ServerUpdateAction
-              environmentId={environmentId}
-              serverLabel={`${environment.label} server`}
-              selfUpdate={resolveServerSelfUpdateCapability(environment.serverConfig)}
-              desktopAppUpdate={supportsDesktopAppUpdate(environment.serverConfig)}
-              threadContinuation={supportsServerUpdateThreadContinuation(environment.serverConfig)}
-              targetVersion={versionMismatch.clientVersion}
-              label={serverUpdateState.status === "failed" ? "Retry update" : "Update"}
-              appearance="icon"
+        ) : null
+      }
+    >
+      {showUpdateAction ? (
+        <ServerUpdateAction
+          environmentId={environmentId}
+          serverLabel={`${environment.label} server`}
+          selfUpdate={resolveServerSelfUpdateCapability(environment.serverConfig)}
+          desktopAppUpdate={supportsDesktopAppUpdate(environment.serverConfig)}
+          threadContinuation={supportsServerUpdateThreadContinuation(environment.serverConfig)}
+          targetVersion={versionMismatch.clientVersion}
+          label={serverUpdateState.status === "failed" ? "Retry update" : "Update"}
+          appearance="icon"
+        />
+      ) : null}
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Switch
+              size="sm"
+              checked={enabled}
+              disabled={isRemoving || unsupported}
+              aria-label={`${enabled ? "Switch off" : "Switch on"} ${environment.label}`}
+              onCheckedChange={(checked) => onSetEnabled(environmentId, checked)}
             />
+          }
+        />
+        <TooltipPopup side="top">
+          {unsupported ? "Client not supported" : enabled ? "Switch off" : "Switch on"}
+        </TooltipPopup>
+      </Tooltip>
+      <Menu>
+        <MenuTrigger
+          render={
+            <Button
+              type="button"
+              variant="ghost-muted"
+              size="icon-xs"
+              disabled={isRemoving}
+              aria-label={`More actions for ${environment.label}`}
+            />
+          }
+        >
+          <EllipsisIcon className="size-3.5" />
+        </MenuTrigger>
+        <MenuPopup align="end">
+          <EnvironmentIconMenu
+            environmentId={environmentId}
+            serverConfig={environment.serverConfig}
+          />
+          {errorTraceId ? (
+            <MenuItem onClick={() => copyTraceId(errorTraceId)}>Copy trace ID</MenuItem>
           ) : null}
-          {isWslEnvironment ? (
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <Button size="xs" variant="outline" disabled>
-                    Managed locally
-                  </Button>
-                }
-              />
-              <TooltipPopup side="top" className="max-w-80 whitespace-pre-wrap leading-tight">
-                Select the primary environment to turn the WSL backend on or off.
-              </TooltipPopup>
-            </Tooltip>
-          ) : (
-            <>
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <Switch
-                      size="sm"
-                      checked={enabled}
-                      disabled={isRemoving}
-                      aria-label={`${enabled ? "Switch off" : "Switch on"} ${environment.label}`}
-                      onCheckedChange={(checked) => onSetEnabled(environmentId, checked)}
-                    />
-                  }
-                />
-                <TooltipPopup side="top">{enabled ? "Switch off" : "Switch on"}</TooltipPopup>
-              </Tooltip>
-              <Menu>
-                <MenuTrigger
-                  render={
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon-xs"
-                      className="text-muted-foreground hover:text-foreground"
-                      disabled={isRemoving}
-                      aria-label={`More actions for ${environment.label}`}
-                    />
-                  }
-                >
-                  <EllipsisIcon className="size-3.5" />
-                </MenuTrigger>
-                <MenuPopup align="end" className="min-w-52">
-                  {errorTraceId ? (
-                    <MenuItem onClick={() => copyTraceId(errorTraceId)}>Copy trace ID</MenuItem>
-                  ) : null}
-                  <MenuItem variant="destructive" onClick={() => onRemove(environment)}>
-                    {isRemoving ? "Removing…" : "Remove from this device…"}
-                  </MenuItem>
-                </MenuPopup>
-              </Menu>
-            </>
-          )}
-        </div>
-      </div>
-    </div>
+          <MenuSeparator />
+          <MenuItem variant="destructive" onClick={() => onRemove(environment)}>
+            {isRemoving ? "Removing…" : "Remove from this device…"}
+          </MenuItem>
+        </MenuPopup>
+      </Menu>
+    </EnvironmentRow>
   );
 }
 
@@ -1817,19 +1819,6 @@ export function ConnectionsSettings() {
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const { environments } = useEnvironments();
   const primaryEnvironment = usePrimaryEnvironment();
-  const [selectedEnvironmentId, setSelectedEnvironmentId] = useState<EnvironmentId | null>(null);
-  const searchTargetId = useLocation({ select: (location) => location.hash.replace(/^#/, "") });
-  const [handledSearchTargetId, setHandledSearchTargetId] = useState<string | null>(null);
-  if (primaryEnvironment && handledSearchTargetId !== searchTargetId) {
-    setHandledSearchTargetId(searchTargetId);
-    if (["connections-environment", "wsl-backend"].includes(searchTargetId)) {
-      setSelectedEnvironmentId(primaryEnvironment.environmentId);
-    }
-  }
-  const selectedEnvironment =
-    environments.find((environment) => environment.environmentId === selectedEnvironmentId) ??
-    primaryEnvironment ??
-    environments[0];
   const connectPairing = useAtomCommand(connectPairingAtom, { reportFailure: false });
   const connectSshEnvironment = useAtomCommand(connectSshEnvironmentAtom, {
     reportFailure: false,
@@ -1846,12 +1835,23 @@ export function ConnectionsSettings() {
       ? (primarySessionState.data.scopes ?? null)
       : null;
   const currentAuthPolicy = desktopBridge ? null : (primarySessionState.data?.auth.policy ?? null);
+  // Catalog order is the order the machines were added; rows never jump when
+  // one is switched off.
   const savedEnvironments = useMemo(
     () =>
-      environments
-        .filter((environment) => environment.entry.target._tag !== "PrimaryConnectionTarget")
-        .toSorted((left, right) => left.label.localeCompare(right.label)),
+      environments.filter(
+        (environment) => environment.entry.target._tag !== "PrimaryConnectionTarget",
+      ),
     [environments],
+  );
+  // The WSL backend is managed from the WSL row under this machine, so it has
+  // no row of its own in the list.
+  const listedEnvironments = useMemo(
+    () =>
+      savedEnvironments.filter(
+        (environment) => !isDesktopLocalConnectionTarget(environment.entry.target),
+      ),
+    [savedEnvironments],
   );
   // Machines "Update all" can reach: switched on, connected, behind the client
   // version, remotely updatable, and not already mid-update. The button only
@@ -1901,10 +1901,15 @@ export function ConnectionsSettings() {
     [savedServerUpdateStates],
   );
   // Switched-off machines never receive threads, so they stay out of the
-  // load balancing list.
+  // load balancing and GitHub sharing lists. The WSL backend has no row in
+  // the Environments list but does take threads, so it stays in here. This
+  // machine leads the list.
   const loadBalancingEnvironments = useMemo(
-    () => environments.filter((environment) => environment.entry.enabled),
-    [environments],
+    () => [
+      ...(primaryEnvironment ? [primaryEnvironment] : []),
+      ...savedEnvironments.filter((environment) => environment.entry.enabled),
+    ],
+    [primaryEnvironment, savedEnvironments],
   );
   const savedDesktopSshEnvironmentKeys = useMemo(() => {
     const keys = new Set<string>();
@@ -2005,7 +2010,9 @@ export function ConnectionsSettings() {
   const setDefaultAdvertisedEndpointKey = useUiStateStore(
     (state) => state.setDefaultAdvertisedEndpointKey,
   );
-  const canManageLocalBackend = currentSessionScopes?.includes(AuthAccessWriteScope) ?? false;
+  const canManageLocalBackend =
+    !isLocalEnvironmentDisabled() &&
+    (currentSessionScopes?.includes(AuthAccessWriteScope) ?? false);
   const canManageRelay = currentSessionScopes?.includes(AuthRelayWriteScope) ?? false;
   const authAccessChanges = useEnvironmentQuery(
     canManageLocalBackend && primaryEnvironmentId !== null
@@ -2726,7 +2733,7 @@ export function ConnectionsSettings() {
                         <AutocompleteItem
                           key={`${target.alias}:${target.hostname}:${target.port ?? ""}`}
                           value={target}
-                          className="h-8 min-h-8 gap-2 whitespace-nowrap"
+                          className="h-8 min-h-8 whitespace-nowrap"
                         >
                           <span className="min-w-0 truncate text-sm font-medium">
                             {target.alias}
@@ -2746,7 +2753,7 @@ export function ConnectionsSettings() {
                     })}
                   </AutocompleteList>
                 ) : (
-                  <AutocompleteEmpty className="break-all px-3 py-2 text-xs">
+                  <AutocompleteEmpty className="break-all">
                     No hosts match "{savedBackendSshHost.trim()}".
                   </AutocompleteEmpty>
                 )}
@@ -3254,39 +3261,64 @@ export function ConnectionsSettings() {
 
   const primarySettings = (
     <>
-      {canManageLocalBackend ? (
+      {desktopBridge || canManageLocalBackend ? (
         <>
           <SettingsSection
             {...searchableSetting("connections-environment")}
-            title={primaryEnvironment?.label ?? "Primary environment"}
-          >
-            {primaryVersionMismatch || primaryServerUpdateState.status !== "idle" ? (
-              <SettingsRow
-                title={
-                  primaryServerUpdateState.status === "failed"
-                    ? "Update failed"
-                    : primaryServerUpdateState.status === "running"
-                      ? "Updating server"
-                      : "Server update available"
+            title={
+              primaryEnvironment?.label ?? (desktopBridge ? "This machine" : "Primary environment")
+            }
+            icon={
+              <EnvironmentMachineIcon
+                aria-hidden
+                kind={
+                  primaryServerConfig
+                    ? resolveEnvironmentMachineKind(primaryServerConfig)
+                    : "desktop"
                 }
+                className="size-4"
+              />
+            }
+            headerAction={
+              primaryEnvironmentId !== null ? (
+                <Menu>
+                  <MenuTrigger
+                    render={
+                      <Button
+                        type="button"
+                        variant="ghost-muted"
+                        size="icon-xs"
+                        aria-label="More actions for this machine"
+                      />
+                    }
+                  >
+                    <EllipsisIcon className="size-3.5" />
+                  </MenuTrigger>
+                  <MenuPopup align="end">
+                    <EnvironmentIconMenu
+                      environmentId={primaryEnvironmentId}
+                      serverConfig={primaryServerConfig}
+                    />
+                  </MenuPopup>
+                </Menu>
+              ) : null
+            }
+          >
+            <LocalEnvironmentSetting />
+            {canManageLocalBackend ? (
+              <SettingsRow
+                title="Version"
                 description={
                   primaryServerUpdateState.status !== "idle" ? (
                     <ServerUpdateProgress state={primaryServerUpdateState} />
-                  ) : primaryVersionMismatch ? (
-                    <Tooltip>
-                      <TooltipTrigger
-                        render={
-                          <button type="button" className="w-fit cursor-help rounded-sm text-left">
-                            Update to match this client.
-                          </button>
-                        }
-                      />
-                      <TooltipPopup side="top">
-                        {primaryVersionMismatch.serverVersion} <span aria-hidden="true">→</span>{" "}
-                        {primaryVersionMismatch.clientVersion}
-                      </TooltipPopup>
-                    </Tooltip>
-                  ) : null
+                  ) : (
+                    [
+                      primaryServerConfig?.environment.serverVersion ?? null,
+                      primaryEnvironment?.displayUrl ?? null,
+                    ]
+                      .filter((value): value is string => value !== null)
+                      .join(" · ") || "Loading…"
+                  )
                 }
                 control={
                   primaryVersionMismatch &&
@@ -3304,25 +3336,19 @@ export function ConnectionsSettings() {
                         primaryServerConfig,
                       )}
                       targetVersion={primaryVersionMismatch.clientVersion}
-                      label={primaryServerUpdateState.status === "failed" ? "Retry" : "Update"}
+                      label={
+                        primaryServerUpdateState.status === "failed"
+                          ? "Retry update"
+                          : `Update to ${primaryVersionMismatch.clientVersion}`
+                      }
                     />
+                  ) : primaryServerUpdateState.status === "idle" && primaryServerConfig ? (
+                    <span className="text-xs text-muted-foreground">Up to date</span>
                   ) : undefined
                 }
               />
             ) : null}
-            {primaryEnvironmentId !== null ? (
-              <SettingsRow
-                {...searchableSetting("environment-icon")}
-                description="The machine other devices see this environment as. Automatic uses what the server detected."
-                control={
-                  <EnvironmentIconPicker
-                    environmentId={primaryEnvironmentId}
-                    serverConfig={primaryServerConfig}
-                  />
-                }
-              />
-            ) : null}
-            {desktopBridge ? (
+            {canManageLocalBackend && desktopBridge ? (
               <>
                 {renderNetworkAccessRow()}
                 {renderEndpointRows("endpoint-rail")}
@@ -3330,19 +3356,23 @@ export function ConnectionsSettings() {
                 {renderWslRow()}
                 <CloudLinkRow canManageRelay={canManageRelay} />
               </>
-            ) : (
+            ) : canManageLocalBackend ? (
               <>
                 {renderDisabledNetworkAccessRow()}
                 <CloudLinkRow canManageRelay={canManageRelay} />
               </>
-            )}
+            ) : null}
           </SettingsSection>
 
           {isLocalBackendRemotelyReachable ? (
-            <SettingsSection
+            <FoldedSettingsSection
+              id="authorized-clients"
               title="Authorized clients"
-              className="[&>div:first-child]:flex-wrap"
-              headerAction={
+              summary={summarizeAuthorizedClients(
+                desktopClientSessions,
+                visibleDesktopPairingLinks,
+              )}
+              control={
                 <AuthorizedClientsHeaderAction
                   onPairingLinkCreated={handlePairingLinkCreated}
                   clientSessions={desktopClientSessions}
@@ -3359,7 +3389,7 @@ export function ConnectionsSettings() {
               >
                 {renderAuthorizedClients("current")}
               </ScrollArea>
-            </SettingsSection>
+            </FoldedSettingsSection>
           ) : null}
           <AlertDialog
             open={isDesktopServerExposureDialogOpen}
@@ -3380,8 +3410,8 @@ export function ConnectionsSettings() {
                 </AlertDialogTitle>
                 <AlertDialogDescription>
                   {pendingDesktopServerExposureMode === "network-accessible"
-                    ? "T3 Code will restart to expose this environment over the network."
-                    : "T3 Code will restart and limit this environment back to this machine."}
+                    ? "Let your other devices connect to T3 Code over the network. Pair devices to give them access. T3 Code will restart."
+                    : "Devices connected over your local network will disconnect. Existing tunnels, such as T3 Connect or Tailscale HTTPS, keep working. T3 Code will restart."}
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
@@ -3389,27 +3419,23 @@ export function ConnectionsSettings() {
                   disabled={isUpdatingDesktopServerExposure}
                   render={<Button variant="outline" disabled={isUpdatingDesktopServerExposure} />}
                 >
-                  Cancel
+                  <span className="[text-box:trim-both_cap_alphabetic]">Cancel</span>
                 </AlertDialogClose>
                 <Button
-                  variant={
-                    pendingDesktopServerExposureMode === "local-only" ? "destructive" : "default"
-                  }
+                  variant="default"
                   onClick={handleConfirmDesktopServerExposureChange}
                   disabled={
                     pendingDesktopServerExposureMode === null || isUpdatingDesktopServerExposure
                   }
                 >
-                  {isUpdatingDesktopServerExposure ? (
-                    <>
-                      <Spinner className="size-3.5" />
-                      Restarting…
-                    </>
-                  ) : pendingDesktopServerExposureMode === "network-accessible" ? (
-                    "Restart and enable"
-                  ) : (
-                    "Restart and disable"
-                  )}
+                  {isUpdatingDesktopServerExposure && <Spinner size="sm" />}
+                  <span className="[text-box:trim-both_cap_alphabetic]">
+                    {isUpdatingDesktopServerExposure
+                      ? "Restarting…"
+                      : pendingDesktopServerExposureMode === "network-accessible"
+                        ? "Restart and enable"
+                        : "Restart and disable"}
+                  </span>
                 </Button>
               </AlertDialogFooter>
             </AlertDialogPopup>
@@ -3466,7 +3492,7 @@ export function ConnectionsSettings() {
                     >
                       {isUpdatingWslBackend ? (
                         <>
-                          <Spinner className="size-3.5" />
+                          <Spinner size="sm" />
                           Applying…
                         </>
                       ) : (
@@ -3480,7 +3506,7 @@ export function ConnectionsSettings() {
                     >
                       {isUpdatingWslBackend ? (
                         <>
-                          <Spinner className="size-3.5" />
+                          <Spinner size="sm" />
                           Applying…
                         </>
                       ) : (
@@ -3501,7 +3527,7 @@ export function ConnectionsSettings() {
                   >
                     {isUpdatingWslBackend ? (
                       <>
-                        <Spinner className="size-3.5" />
+                        <Spinner size="sm" />
                         Applying…
                       </>
                     ) : pendingWslChange?.kind === "disable" ? (
@@ -3550,7 +3576,7 @@ export function ConnectionsSettings() {
                 >
                   {isUpdatingTailscaleServe ? (
                     <>
-                      <Spinner className="size-3.5" />
+                      <Spinner size="sm" />
                       Restarting…
                     </>
                   ) : (
@@ -3575,7 +3601,7 @@ export function ConnectionsSettings() {
                   Tailscale to proxy HTTPS traffic to this backend.
                 </DialogDescription>
               </DialogHeader>
-              <DialogPanel className="space-y-4">
+              <DialogPanel>
                 <label className="block">
                   <span className="text-sm font-medium text-foreground">HTTPS port</span>
                   <Input
@@ -3604,9 +3630,7 @@ export function ConnectionsSettings() {
                       }
                     />
                     {pendingTailscaleServeBaseUrl ? (
-                      <TooltipPopup side="top" className="max-w-80">
-                        {pendingTailscaleServeBaseUrl}
-                      </TooltipPopup>
+                      <TooltipPopup side="top">{pendingTailscaleServeBaseUrl}</TooltipPopup>
                     ) : null}
                   </Tooltip>
                 </div>
@@ -3624,7 +3648,7 @@ export function ConnectionsSettings() {
                 >
                   {isUpdatingTailscaleServe ? (
                     <>
-                      <Spinner className="size-3.5" />
+                      <Spinner size="sm" />
                       Restarting…
                     </>
                   ) : (
@@ -3649,18 +3673,14 @@ export function ConnectionsSettings() {
 
   return (
     <SettingsPageContainer width="wide">
+      {primarySettings}
       <SettingsSection
         {...searchableSetting("remote-environments")}
         title="Environments"
-        variant="plain"
         headerAction={
           <div className="flex items-center gap-1">
             {savedServerUpdateTargets.length > 0 ? (
-              <ServerUpdatesAction
-                targets={savedServerUpdateTargets}
-                variant="ghost"
-                className="font-normal text-muted-foreground/60 hover:text-muted-foreground"
-              />
+              <ServerUpdatesAction targets={savedServerUpdateTargets} variant="ghost-muted" />
             ) : null}
             <Dialog
               open={addBackendDialogOpen}
@@ -3676,12 +3696,7 @@ export function ConnectionsSettings() {
                   render={
                     <DialogTrigger
                       render={
-                        <Button
-                          size="xs"
-                          variant="ghost"
-                          className="font-normal text-muted-foreground/60 hover:text-muted-foreground"
-                          aria-label="Add environment"
-                        >
+                        <Button size="xs" variant="ghost-muted" aria-label="Add environment">
                           <PlusIcon className="size-3" />
                           <span>Add environment</span>
                         </Button>
@@ -3725,118 +3740,22 @@ export function ConnectionsSettings() {
           </div>
         }
       >
-        <div className="overflow-hidden rounded-xl border border-border/60 bg-card/40 shadow-xs/5 lg:grid lg:h-[min(34rem,calc(100dvh-18rem))] lg:min-h-[28rem] lg:grid-cols-[17rem_minmax(0,1fr)]">
-          <div className="border-b border-border/60 bg-muted/10 lg:flex lg:min-h-0 lg:flex-col lg:border-r lg:border-b-0">
-            <ScrollArea
-              scrollFade
-              chainVerticalScroll
-              className="max-h-64 lg:max-h-none lg:min-h-0 lg:flex-1"
-            >
-              <div className="divide-y divide-border/50" aria-label="Environments">
-                {(primaryEnvironment
-                  ? [primaryEnvironment, ...savedEnvironments]
-                  : savedEnvironments
-                ).map((environment) => {
-                  const selected = environment.environmentId === selectedEnvironment?.environmentId;
-                  const isPrimary = environment.entry.target._tag === "PrimaryConnectionTarget";
-                  return (
-                    <button
-                      key={environment.environmentId}
-                      type="button"
-                      aria-label={"Select " + environment.label}
-                      aria-pressed={selected}
-                      onClick={() => setSelectedEnvironmentId(environment.environmentId)}
-                      className={cn(
-                        "flex min-h-18 w-full cursor-pointer items-start gap-3 px-3 py-3 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:px-4",
-                        selected ? "bg-muted/45" : "hover:bg-muted/25",
-                        !environment.entry.enabled && !selected && "opacity-60",
-                      )}
-                    >
-                      <EnvironmentMachineIcon
-                        aria-hidden
-                        kind={resolveEnvironmentMachineKind(environment.serverConfig)}
-                        className="mt-0.5 size-4 shrink-0 text-muted-foreground"
-                      />
-                      <span className="min-w-0 flex-1 space-y-1">
-                        <span className="flex items-center gap-2">
-                          <span className="truncate text-sm font-medium">{environment.label}</span>
-                          {isPrimary ? (
-                            <span className="shrink-0 text-[10px] text-muted-foreground">
-                              Primary
-                            </span>
-                          ) : null}
-                        </span>
-                        <Tooltip>
-                          <TooltipTrigger
-                            render={
-                              <span className="block truncate text-xs text-muted-foreground" />
-                            }
-                          >
-                            {environment.displayUrl ?? "T3 Connect"}
-                          </TooltipTrigger>
-                          <TooltipPopup>{environment.displayUrl ?? "T3 Connect"}</TooltipPopup>
-                        </Tooltip>
-                        <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                          <span
-                            aria-hidden
-                            className={cn(
-                              "size-1.5 shrink-0 rounded-full",
-                              !environment.entry.enabled
-                                ? "bg-muted-foreground/40"
-                                : connectionPhaseDotClassName(environment.connection.phase),
-                            )}
-                          />
-                          {environment.entry.enabled
-                            ? connectionStatusTitle(environment.connection)
-                            : "Off"}
-                        </span>
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            </ScrollArea>
-          </div>
-          <ScrollArea
-            key={selectedEnvironment?.environmentId}
-            scrollFade
-            chainVerticalScroll
-            className="min-w-0 lg:min-h-0 lg:h-full"
-          >
-            {selectedEnvironment ? (
-              <div className="space-y-6 p-4">
-                {selectedEnvironment.entry.target._tag === "PrimaryConnectionTarget" ? (
-                  primarySettings
-                ) : (
-                  <SettingsSection title="Connection">
-                    <SavedBackendListRow
-                      key={selectedEnvironment.environmentId}
-                      environment={selectedEnvironment}
-                      removingEnvironmentId={removingSavedEnvironmentId}
-                      onSetEnabled={handleSetSavedBackendEnabled}
-                      onRemove={handleRemoveSavedBackend}
-                    />
-                  </SettingsSection>
-                )}
-                {selectedEnvironment.entry.enabled && loadBalancingEnvironments.length > 1 ? (
-                  <SettingsSection title="Thread placement">
-                    <LoadBalancingPreference environment={selectedEnvironment} />
-                  </SettingsSection>
-                ) : null}
-                <GitHubRoutingSettings
-                  environments={environments}
-                  selectedEnvironmentId={selectedEnvironment.environmentId}
-                />
-              </div>
-            ) : null}
-          </ScrollArea>
-        </div>
+        {listedEnvironments.map((environment) => (
+          <SavedBackendListRow
+            key={environment.environmentId}
+            environment={environment}
+            removingEnvironmentId={removingSavedEnvironmentId}
+            onSetEnabled={handleSetSavedBackendEnabled}
+            onRemove={handleRemoveSavedBackend}
+          />
+        ))}
         <CloudRemoteEnvironmentRows
           primaryEnvironmentId={primaryEnvironmentId}
           savedEnvironments={savedEnvironments}
         />
       </SettingsSection>
       <LoadBalancingSettings environments={loadBalancingEnvironments} />
+      <GitHubRoutingSettings environments={loadBalancingEnvironments} />
     </SettingsPageContainer>
   );
 }

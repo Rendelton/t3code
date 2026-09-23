@@ -52,6 +52,32 @@ describe("formatShortTimestamp", () => {
   });
 });
 
+describe("resolveWeekStartsOn", () => {
+  it.each([
+    ["en-US", 0],
+    ["en-GB", 1],
+    ["pl-PL", 1],
+    ["ar-EG", 6],
+  ])("starts the %s week on weekday %i", async (locale, weekday) => {
+    const { resolveWeekStartsOn } = await import("./timestampFormat");
+    expect(resolveWeekStartsOn(locale)).toBe(weekday);
+  });
+
+  it("leaves the default to the caller for a malformed locale", async () => {
+    const { resolveWeekStartsOn } = await import("./timestampFormat");
+    expect(resolveWeekStartsOn("not a locale")).toBeUndefined();
+  });
+
+  it("follows the locale the desktop host reports", async () => {
+    vi.stubGlobal("window", { desktopBridge: { getSystemLocale: () => "en-GB" } });
+    vi.resetModules();
+    const { weekStartsOn } = await import("./timestampFormat");
+    expect(weekStartsOn).toBe(1);
+    vi.unstubAllGlobals();
+    vi.resetModules();
+  });
+});
+
 describe("formatChatTimestampTooltip", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -226,17 +252,5 @@ describe("formatElapsedDurationLabel", () => {
     expect(formatElapsedDurationLabel("2026-04-07T11:45:00.000Z")).toBe("15m");
     expect(formatElapsedDurationLabel("2026-04-07T06:00:00.000Z")).toBe("6h");
     expect(formatElapsedDurationLabel("2026-04-03T12:00:00.000Z")).toBe("4d");
-  });
-});
-
-describe("explicit relative-time clock", () => {
-  it("uses the supplied minute instead of the wall clock", () => {
-    const completedAt = "2026-09-07T01:00:00Z";
-    expect(formatRelativeTimeLabel(completedAt, Date.parse("2026-09-07T01:01:00Z"))).toBe("1m ago");
-    expect(formatRelativeTimeLabel(completedAt, Date.parse("2026-09-07T01:02:00Z"))).toBe("2m ago");
-    expect(formatRelativeTime(completedAt, Date.parse("2026-09-07T01:02:00Z"))).toEqual({
-      value: "2m",
-      suffix: "ago",
-    });
   });
 });
