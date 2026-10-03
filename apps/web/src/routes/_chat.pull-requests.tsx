@@ -132,6 +132,7 @@ import { useLiveRefresh } from "../hooks/useLiveRefresh";
 import { useOpenPanelPullRequestUrl } from "../hooks/useOpenPanelPullRequestUrl";
 import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
 import { toastManager } from "../components/ui/toast";
+import { useEscapeToGoBack } from "../hooks/useNavigateBack";
 import { usePanelAnimationSettings, usePanelPresence } from "../panelAnimations";
 import {
   PULL_REQUESTS_PANEL_REF,
@@ -340,6 +341,7 @@ export const Route = createFileRoute("/_chat/pull-requests")({
 });
 
 function PullRequestsRouteView() {
+  useEscapeToGoBack();
   const search = Route.useSearch();
   const sort = search.sort ?? "ready";
   const statsPolicy: PullRequestStatsPolicy =
@@ -1709,14 +1711,19 @@ function PullRequestsRouteView() {
   const panelToggleControls = (
     <PanelLayoutControls
       showTerminalControl={false}
+      showThreadPanelControl={false}
       terminalAvailable={false}
       terminalOpen={false}
       terminalShortcutLabel={null}
+      threadPanelOpen={false}
+      threadPanelPresentation="inline"
+      threadPanelShortcutLabel={null}
+      threadPanelHasAttention={false}
+      onToggleThreadPanel={() => undefined}
       rightPanelAvailable={rightPanelAvailable}
       rightPanelOpen={rightPanelState.isOpen}
       rightPanelShortcutLabel={shortcutLabelForCommand(keybindings, "rightPanel.toggle")}
       rightPanelUnavailableLabel="Select a pull request first"
-      liveAgentCount={0}
       onToggleTerminal={() => undefined}
       onToggleRightPanel={toggleRightPanel}
     />
@@ -1819,7 +1826,7 @@ function PullRequestsRouteView() {
       )}
 
       {listQuery.error && shownCount > 0 ? (
-        <div className="flex items-center justify-between gap-3 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs">
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-warning/30 bg-warning-surface px-3 py-2 text-xs">
           <span>{listQuery.error} Showing the last pull requests loaded.</span>
           <Button size="xs" variant="outline" onClick={() => listQuery.refresh()}>
             Retry
@@ -2063,8 +2070,9 @@ function PullRequestsRouteView() {
       if (command === "rightPanel.toggle") toggleRightPanelFromShortcut(event);
       if (command === "thread.copyReference") copyPullRequestFromShortcut(event);
     };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    // Let panel shortcuts consume Escape before page navigation at window.
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
   }, [keybindings]);
 
   return (
@@ -2110,7 +2118,6 @@ function PullRequestsRouteView() {
             onAddFiles={() => undefined}
             onAddPullRequest={() => undefined}
             onAddPullRequests={() => undefined}
-            onAddAgents={() => undefined}
             onAddDevice={() => undefined}
             browserAvailable={false}
             terminalAvailable={false}
@@ -2118,9 +2125,7 @@ function PullRequestsRouteView() {
             filesAvailable={false}
             pullRequestAvailable={false}
             pullRequestsAvailable={false}
-            agentsAvailable={false}
             deviceAvailable={false}
-            liveAgentCount={0}
             pullRequestStatusSeeds={listedPullRequestTabStatuses}
           >
             <PullRequestDetailPanel

@@ -7,15 +7,28 @@
  * @module usageTranscripts
  */
 import type { UsageProviderKind, UsageTokenTotals } from "@t3tools/contracts";
-import * as Predicate from "effect/Predicate";
+
+/**
+ * Billing speed of a request. Faster speeds bill at a model-specific premium.
+ * Claude fast mode and Codex `priority` are `fast`; Codex `ultrafast` is its
+ * own, more expensive tier.
+ */
+export type UsageSpeed = "standard" | "fast" | "ultrafast";
 
 export interface UsageRecord {
   readonly provider: UsageProviderKind;
   readonly timestampMs: number;
   readonly model: string;
+  /**
+   * Rate-table key when the provider's display name carries tiers the table
+   * does not know, such as Cursor's `claude-opus-5-5-high`. Defaults to `model`.
+   */
+  readonly rateModel?: string;
   readonly sessionId: string;
   readonly totals: UsageTokenTotals;
   readonly reportedCostUsd: number | null;
+  /** Only Claude Code and Codex record a speed; other providers are `standard`. */
+  readonly speed: UsageSpeed;
   /**
    * Key for cross-file de-duplication, or `null` when the record is inherently
    * unique and needs no dedup.
@@ -69,7 +82,7 @@ export function totalTokens(totals: UsageTokenTotals): number {
  * an order of magnitude.
  */
 export function mightCarryUsage(line: string, provider: UsageProviderKind): boolean {
-  if (provider === "claude" || provider === "pi") return line.includes('"usage"');
+  if (provider === "claude") return line.includes('"usage"');
   if (provider === "grok") return line.includes('"turn_completed"');
   return line.includes('"token_count"');
 }
@@ -104,6 +117,10 @@ export function parseClaudeLine(line: string): UsageRecord | null {
   } catch {
     return null;
   }
+  return parseClaudeRecord(parsed);
+}
+
+export function parseClaudeRecord(parsed: unknown): UsageRecord | null {
   if (typeof parsed !== "object" || parsed === null) return null;
 
   const record = parsed as Record<string, unknown>;
@@ -146,55 +163,8 @@ export function parseClaudeLine(line: string): UsageRecord | null {
       reasoningTokens: 0,
     },
     reportedCostUsd: typeof cost === "number" && Number.isFinite(cost) ? cost : null,
+    speed: usageRecord["speed"] === "fast" ? "fast" : "standard",
     dedupeKey,
-  };
-}
-
-/**
- * Pi stores disjoint input/cache counts and model-priced cost on each entry.
- * Summary/tool usage has no reliable model attribution, so keep it in its own
- * bucket. Never traverse retainedTail: those messages were already counted.
- */
-export function parsePiLine(line: string, sessionId = ""): UsageRecord | null {
-  let entry: unknown;
-  try {
-    entry = JSON.parse(line);
-  } catch {
-    return null;
-  }
-  if (!Predicate.isObject(entry)) return null;
-  const message = entry.type === "message" ? entry.message : entry;
-  if (!Predicate.isObject(message)) return null;
-  const assistant = entry.type === "message" && message.role === "assistant";
-  if (
-    !assistant &&
-    !(entry.type === "message" && message.role === "toolResult") &&
-    entry.type !== "compaction" &&
-    entry.type !== "branch_summary"
-  )
-    return null;
-  const usage = message.usage;
-  if (!Predicate.isObject(usage)) return null;
-  const timestampMs = parseTimestampMs(entry.timestamp);
-  if (timestampMs === null) return null;
-  const model = assistant ? message.model : "Tools/summaries";
-  if (typeof model !== "string" || model.length === 0) return null;
-  const cost = Predicate.isObject(usage.cost) ? usage.cost.total : undefined;
-  return {
-    provider: "pi",
-    timestampMs,
-    model,
-    sessionId,
-    totals: {
-      uncachedInputTokens: int(usage.input),
-      cachedInputTokens: int(usage.cacheRead),
-      cacheCreationTokens: int(usage.cacheWrite),
-      outputTokens: int(usage.output),
-      reasoningTokens: int(usage.reasoning),
-    },
-    reportedCostUsd: typeof cost === "number" && Number.isFinite(cost) && cost >= 0 ? cost : null,
-    // Forks copy entry IDs and timestamps; IDs alone are only eight hex digits.
-    dedupeKey: typeof entry.id === "string" ? `${entry.id}:${timestampMs}` : null,
   };
 }
 
@@ -205,12 +175,14 @@ export function parsePiLine(line: string, sessionId = ""): UsageRecord | null {
 /**
  * Rolling state for a single Codex rollout file.
  *
- * Codex `token_count` events carry no model, so the model is carried forward
- * from the most recent `turn_context`. Sessions that switch models mid-run
- * attribute correctly from the switch onward.
+ * Codex `token_count` events carry no model or service tier, so both are
+ * carried forward: the model from the most recent `turn_context`, the tier from
+ * the most recent `thread_settings_applied`. Sessions that switch either
+ * mid-run attribute correctly from the switch onward.
  */
 export interface CodexScanState {
   model: string;
+  speed: UsageSpeed;
   sessionId: string;
   lastUsageSignature: string | null;
   sawSessionMeta: boolean;
@@ -222,6 +194,7 @@ export interface CodexScanState {
 export function initialCodexScanState(): CodexScanState {
   return {
     model: "",
+    speed: "standard",
     sessionId: "",
     lastUsageSignature: null,
     sawSessionMeta: false,
@@ -266,6 +239,10 @@ export function parseCodexLine(line: string, state: CodexScanState): UsageRecord
   } catch {
     return null;
   }
+  return parseCodexRecord(parsed, state);
+}
+
+export function parseCodexRecord(parsed: unknown, state: CodexScanState): UsageRecord | null {
   if (typeof parsed !== "object" || parsed === null) return null;
 
   const record = parsed as Record<string, unknown>;
@@ -292,6 +269,14 @@ export function parseCodexLine(line: string, state: CodexScanState): UsageRecord
 
   if (record["type"] === "turn_context") {
     if (typeof payloadRecord["model"] === "string") state.model = payloadRecord["model"];
+    return null;
+  }
+
+  if (payloadType === "thread_settings_applied") {
+    const settings = payloadRecord["thread_settings"];
+    if (typeof settings === "object" && settings !== null) {
+      state.speed = codexSpeed((settings as Record<string, unknown>)["service_tier"]);
+    }
     return null;
   }
 
@@ -353,10 +338,22 @@ export function parseCodexLine(line: string, state: CodexScanState): UsageRecord
     totals,
     // Codex does not report cost in the rollout.
     reportedCostUsd: null,
+    speed: state.speed,
     // Events surviving the fork-copy suppression above are unique to this
     // rollout, so they need no global dedup.
     dedupeKey: null,
   };
+}
+
+/**
+ * Maps a Codex `service_tier` to its billing speed. Codex omits the field when
+ * no tier was requested, which bills as standard, as do `default` and
+ * `standard`. `fast` is accepted as an alias of `priority`.
+ */
+function codexSpeed(serviceTier: unknown): UsageSpeed {
+  if (serviceTier === "priority" || serviceTier === "fast") return "fast";
+  if (serviceTier === "ultrafast") return "ultrafast";
+  return "standard";
 }
 
 /* -------------------------------------------------------------------------- */
@@ -422,6 +419,10 @@ export function parseGrokLine(line: string): readonly UsageRecord[] {
   } catch {
     return [];
   }
+  return parseGrokRecord(parsed);
+}
+
+export function parseGrokRecord(parsed: unknown): readonly UsageRecord[] {
   if (typeof parsed !== "object" || parsed === null) return [];
 
   const record = parsed as Record<string, unknown>;
@@ -482,6 +483,7 @@ export function parseGrokLine(line: string): readonly UsageRecord[] {
         sessionId,
         totals: grokTotalsToUsage(topLevel),
         reportedCostUsd: grokCostTicksToUsd(topLevel.costUsdTicks),
+        speed: "standard",
         // No prompt id means we cannot tell two same-second updates apart.
         dedupeKey: promptId === null ? null : `${sessionId}:${promptId}:grok`,
       },
@@ -528,6 +530,7 @@ export function parseGrokLine(line: string): readonly UsageRecord[] {
       sessionId,
       totals,
       reportedCostUsd,
+      speed: "standard",
       dedupeKey: promptId === null ? null : `${sessionId}:${promptId}:${entry.model}`,
     });
   }

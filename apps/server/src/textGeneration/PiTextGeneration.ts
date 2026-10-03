@@ -1,22 +1,24 @@
 /**
- * PiTextGeneration — one-shot text generation through the pi CLI.
- *
- * Spawns `pi -p --no-session` per request (thinking off) and parses the
- * JSON object the shared prompts request. Sessions are deliberately
- * ephemeral: generation must never touch a user's pi session history.
- *
- * @module textGeneration/PiTextGeneration
+ * PiTextGeneration — commit messages, PR content, branch names, and thread
+ * titles generated through an ephemeral `pi --mode rpc --no-session` process.
+ * No session file is written; the user's Pi configuration (default model,
+ * auth, custom providers) still applies.
  */
-import { type ModelSelection, type PiSettings, TextGenerationError } from "@t3tools/contracts";
-import { extractJsonObject } from "@t3tools/shared/schemaJson";
-import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@t3tools/shared/git";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
-import * as Stream from "effect/Stream";
-import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import { ChildProcessSpawner } from "effect/unstable/process";
-import { resolveSpawnCommand } from "@t3tools/shared/shell";
 
+import { TextGenerationError, type ModelSelection, type PiSettings } from "@t3tools/contracts";
+import { formatGeneratedBranchName, sanitizeFeatureBranchName } from "@t3tools/shared/git";
+import { extractJsonObject } from "@t3tools/shared/schemaJson";
+
+import { makePiRpcConnection, parsePiModelSlug } from "../orchestration-v2/Adapters/PiRpc.ts";
+import {
+  buildPiRpcLaunch,
+  resolvePiLaunchArgs,
+} from "../orchestration-v2/Adapters/piT3McpInjection.ts";
 import * as TextGeneration from "./TextGeneration.ts";
 import {
   buildBranchNamePrompt,
@@ -29,134 +31,134 @@ import {
   sanitizePrTitle,
   sanitizeThreadTitle,
 } from "./TextGenerationUtils.ts";
-import { parsePiModelSlug } from "../provider/Layers/PiAdapter.ts";
-import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 
-const PI_TEXT_GENERATION_TIMEOUT_MS = 120_000;
+const PI_TIMEOUT_MS = 180_000;
 
-/** Fold a child process byte stream into text. */
-const decodeTextFold = <E>(stream: Stream.Stream<Uint8Array, E>): Effect.Effect<string, E> =>
-  stream.pipe(
-    Stream.decodeText(),
-    Stream.runFold(() => "", (acc: string, chunk: string) => acc + chunk),
-  );
-
-type TextGenerationOperation =
-  | "generateCommitMessage"
-  | "generatePrContent"
-  | "generateBranchName"
-  | "generateThreadTitle";
+const isTextGenerationError = Schema.is(TextGenerationError);
 
 export const makePiTextGeneration = Effect.fn("makePiTextGeneration")(function* (
   piSettings: PiSettings,
   environment: NodeJS.ProcessEnv = process.env,
 ) {
-  const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 
-  const runPiJson = Effect.fn("runPiJson")(function* <S extends Schema.Top>({
+  const runPiJson = <S extends Schema.Top>({
     operation,
     cwd,
     prompt,
-    outputSchema,
+    outputSchemaJson,
     modelSelection,
   }: {
-    operation: TextGenerationOperation;
+    operation:
+      | "generateCommitMessage"
+      | "generatePrContent"
+      | "generateBranchName"
+      | "generateThreadTitle";
     cwd: string;
     prompt: string;
-    outputSchema: S;
+    outputSchemaJson: S;
     modelSelection: ModelSelection;
-  }): Effect.fn.Return<S["Type"], TextGenerationError, S["DecodingServices"]> {
-    const parsedModel = parsePiModelSlug(modelSelection.model);
-    if (!parsedModel) {
-      return yield* new TextGenerationError({
-        operation,
-        detail: `pi text generation requires a 'provider/id' model selection (got '${modelSelection.model}').`,
+  }): Effect.Effect<S["Type"], TextGenerationError, S["DecodingServices"]> =>
+    Effect.gen(function* () {
+      const resolvedLaunchArgs = resolvePiLaunchArgs(piSettings.launchArgs);
+      if (!resolvedLaunchArgs.ok) {
+        return yield* new TextGenerationError({
+          operation,
+          detail: resolvedLaunchArgs.message,
+        });
+      }
+      const launch = buildPiRpcLaunch({
+        launchArgs: resolvedLaunchArgs.args,
+        environment,
+        mcpSession: undefined,
+        extensionPath: undefined,
+        ephemeral: true,
+        // No user is present to answer a text-generation extension dialog.
+        disableExtensions: true,
+        // Background naming/content helpers must never mutate the workspace.
+        disableTools: true,
       });
-    }
-    const thinking = getModelSelectionStringOptionValue(modelSelection, "thinkingLevel");
-    const spawnCommand = yield* resolveSpawnCommand(
-      piSettings.binaryPath || "pi",
-      [
-        "-p",
-        "--no-session",
-        "--approve",
-        "--no-extensions",
-        "--no-prompt-templates",
-        "--no-skills",
-        "--no-themes",
-        "--no-context-files",
-        "--tools",
-        "",
-        "--model",
-        `${parsedModel.provider}/${parsedModel.id}${thinking ? `:${thinking}` : ":off"}`,
-        prompt,
-      ],
-      { env: environment },
-    );
-    const exit = yield* commandSpawner
-      .spawn(
-        ChildProcess.make(spawnCommand.command, spawnCommand.args, {
-          cwd,
-          env: {
-            ...environment,
-            ...(piSettings.agentDir ? { PI_CODING_AGENT_DIR: piSettings.agentDir } : {}),
-          },
-          shell: spawnCommand.shell,
+      const connection = yield* makePiRpcConnection({
+        command: piSettings.binaryPath || "pi",
+        // Extensions and tools are disabled because no user is present to
+        // answer a dialog and background text generation is read-only. User
+        // model config and auth still apply.
+        args: launch.args,
+        cwd,
+        env: launch.env,
+      }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
+
+      if (modelSelection.model !== "default") {
+        // `customModels` accepts arbitrary strings, so an unusable slug is
+        // rejected rather than skipped: running Pi's default model here would
+        // report success for a model the caller never asked for.
+        const parsed = parsePiModelSlug(modelSelection.model);
+        if (parsed === null) {
+          return yield* new TextGenerationError({
+            operation,
+            detail: `Pi model '${modelSelection.model}' must use provider/model format.`,
+          });
+        }
+        yield* connection.request({
+          type: "set_model",
+          provider: parsed.provider,
+          modelId: parsed.modelId,
+        });
+      }
+
+      yield* connection.request({ type: "prompt", message: prompt });
+      yield* Effect.gen(function* () {
+        while (true) {
+          const event = yield* Queue.take(connection.events);
+          if (event["type"] === "agent_settled") return;
+        }
+      });
+      const data = yield* connection.request({ type: "get_last_assistant_text" });
+      const text =
+        typeof data === "object" &&
+        data !== null &&
+        typeof (data as { text?: unknown }).text === "string"
+          ? (data as { text: string }).text.trim()
+          : "";
+      if (!text) {
+        return yield* new TextGenerationError({
+          operation,
+          detail: "Pi returned empty output.",
+        });
+      }
+      const decodeOutput = Schema.decodeEffect(Schema.fromJsonString(outputSchemaJson));
+      return yield* decodeOutput(extractJsonObject(text)).pipe(
+        Effect.catchTags({
+          SchemaError: (cause) =>
+            Effect.fail(
+              new TextGenerationError({
+                operation,
+                detail: "Pi returned invalid structured output.",
+                cause,
+              }),
+            ),
         }),
-      )
-      .pipe(
-        Effect.scoped,
-        Effect.flatMap((child) =>
-          Effect.all(
-            [
-              child.stdout.pipe(decodeTextFold),
-              child.stderr.pipe(decodeTextFold),
-              child.exitCode,
-            ],
-            { concurrency: "unbounded" },
-          ),
-        ),
-        Effect.timeoutOption(PI_TEXT_GENERATION_TIMEOUT_MS),
-        Effect.mapError((cause) =>
-          new TextGenerationError({
-            operation,
-            detail: `Failed to run the pi CLI for ${operation}.`,
-            cause,
-          }),
-        ),
       );
-    if (exit._tag === "None") {
-      return yield* new TextGenerationError({
-        operation,
-        detail: `pi ${operation} timed out after ${PI_TEXT_GENERATION_TIMEOUT_MS}ms.`,
-      });
-    }
-    const [stdout, stderr, exitCode] = exit.value;
-    if (Number(exitCode) !== 0) {
-      return yield* new TextGenerationError({
-        operation,
-        detail: `pi ${operation} exited with code ${Number(exitCode)}: ${stderr.trim().slice(0, 500)}`,
-      });
-    }
-    const trimmed = stdout.trim();
-    if (!trimmed) {
-      return yield* new TextGenerationError({
-        operation,
-        detail: `pi ${operation} returned empty output.`,
-      });
-    }
-    const decodeOutput = Schema.decodeEffect(Schema.fromJsonString(outputSchema));
-    return yield* decodeOutput(extractJsonObject(trimmed)).pipe(
-      Effect.mapError(
-        (cause) =>
-          new TextGenerationError({
-            operation,
-            detail: `pi ${operation} returned invalid structured output: ${trimmed.slice(0, 500)}`,
-            cause,
-          }),
+    }).pipe(
+      Effect.timeoutOption(PI_TIMEOUT_MS),
+      Effect.flatMap(
+        Option.match({
+          onNone: () =>
+            Effect.fail(new TextGenerationError({ operation, detail: "Pi request timed out." })),
+          onSome: (value) => Effect.succeed(value),
+        }),
       ),
+      Effect.mapError((cause) =>
+        isTextGenerationError(cause)
+          ? cause
+          : new TextGenerationError({
+              operation,
+              detail: "Pi text generation failed.",
+              cause,
+            }),
+      ),
+      Effect.scoped,
     );
-  });
 
   const generateCommitMessage: TextGeneration.TextGeneration["Service"]["generateCommitMessage"] =
     Effect.fn("PiTextGeneration.generateCommitMessage")(function* (input) {
@@ -171,7 +173,7 @@ export const makePiTextGeneration = Effect.fn("makePiTextGeneration")(function* 
         operation: "generateCommitMessage",
         cwd: input.cwd,
         prompt,
-        outputSchema,
+        outputSchemaJson: outputSchema,
         modelSelection: input.modelSelection,
       });
       return {
@@ -191,14 +193,14 @@ export const makePiTextGeneration = Effect.fn("makePiTextGeneration")(function* 
         commitSummary: input.commitSummary,
         diffSummary: input.diffSummary,
         diffPatch: input.diffPatch,
-        changeRequestTemplate: input.changeRequestTemplate,
         policy: input.policy,
+        changeRequestTemplate: input.changeRequestTemplate,
       });
       const generated = yield* runPiJson({
         operation: "generatePrContent",
         cwd: input.cwd,
         prompt,
-        outputSchema,
+        outputSchemaJson: outputSchema,
         modelSelection: input.modelSelection,
       });
       return {
@@ -211,16 +213,18 @@ export const makePiTextGeneration = Effect.fn("makePiTextGeneration")(function* 
     Effect.fn("PiTextGeneration.generateBranchName")(function* (input) {
       const { prompt, outputSchema } = buildBranchNamePrompt({
         message: input.message,
+        attachments: input.attachments,
+        naming: input.naming,
       });
       const generated = yield* runPiJson({
         operation: "generateBranchName",
         cwd: input.cwd,
         prompt,
-        outputSchema,
+        outputSchemaJson: outputSchema,
         modelSelection: input.modelSelection,
       });
       return {
-        branch: sanitizeBranchFragment(generated.branch),
+        branch: formatGeneratedBranchName(generated.branch, input.naming),
       };
     });
 
@@ -229,17 +233,18 @@ export const makePiTextGeneration = Effect.fn("makePiTextGeneration")(function* 
       const { prompt, outputSchema } = buildThreadTitlePrompt({
         message: input.message,
         previousTitle: input.previousTitle,
+        attachments: input.attachments,
       });
       const generated = yield* runPiJson({
         operation: "generateThreadTitle",
         cwd: input.cwd,
         prompt,
-        outputSchema,
+        outputSchemaJson: outputSchema,
         modelSelection: input.modelSelection,
       });
       return {
         title: sanitizeThreadTitle(generated.title),
-      };
+      } satisfies TextGeneration.ThreadTitleGenerationResult;
     });
 
   return {

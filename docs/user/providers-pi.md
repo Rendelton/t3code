@@ -1,71 +1,67 @@
-# pi
+# Pi
 
-[pi](https://github.com/earendil-works/pi) is an open-source coding agent from Earendil Works. The
-pi provider in T3 Code runs pi as a subprocess and talks to it over its RPC protocol, so your pi
-setup — providers, models, extensions, skills, and sessions — is exactly what T3 Code drives.
+T3 Code can use your existing Pi coding agent installation while keeping Pi's models, auth,
+extensions, skills, context files, and native session history.
 
-## Setup
+## Set Up Pi
 
-Install pi and sign in to at least one model provider:
+1. Install Pi on the machine running the T3 Code server. Pi 1.0 is recommended; 0.80.5 is the
+   oldest version T3 Code supports.
+2. Run Pi once in a terminal and finish the provider login or API-key setup you normally use.
+3. Open T3 Code Settings, enable Pi, and refresh the provider.
 
-```bash
-npm install -g @earendil-works/pi-coding-agent
-pi auth check --provider <provider>
-```
+If `pi` is not on the server's `PATH`, set Pi's binary path to the executable. Provider environment
+variables and launch arguments are also available for installations that need a custom agent
+directory, endpoint, or model configuration. `--provider` must be paired with `--model`. T3 Code
+rejects launch arguments that change Pi's execution mode or select a session because T3 owns those
+parts of the process lifecycle.
 
-pi supports API keys and OAuth for Anthropic, OpenAI, Google, Z.ai, custom OpenAI-compatible
-endpoints (via `~/.pi/agent/models.json`), and more. Run `pi --list-models` to confirm which models
-are available with your credentials — T3 Code shows that same list.
+## What Carries Over
 
-No T3 Code configuration is required. The default pi provider uses the `pi` binary on your `PATH`
-and pi's own config directory (`~/.pi/agent`).
+T3 Code discovers the models reported by Pi and exposes their supported thinking levels. The
+thinking picker marks Pi's current configured level as the default without overriding it. Threads
+use Pi's native session files for resume, rollback, and forks within the same Pi instance. Forks
+preserve the native conversation through the selected turn in the destination workspace.
+Switching providers uses portable conversation context. Extension
+dialogs appear in the T3 Code composer, and the composer context meter follows Pi's own usage
+reporting while a response streams and after it settles.
 
-## Settings
+Pi skills appear in the composer's `$` menu. This includes user skills and project skills that Pi
+loads for the current workspace; selecting one uses Pi's native skill expansion.
 
-| Setting | What it does |
-| --- | --- |
-| Binary path | Path to the pi binary. Defaults to `pi` on your `PATH`. |
-| Agent directory | pi's config directory. Leave blank to use `~/.pi/agent`. |
+Pi loads its normal user and project extensions. Blocking `select`, `confirm`, `input`, and `editor`
+dialogs work in T3 Code. Notifications appear in the work log. Pi terminal decoration such as
+titles, status lines, and widgets does not have a T3 Code equivalent.
 
-Model and thinking-level pickers come from your pi installation and refresh automatically.
+## Permission Modes
 
-## Using pi threads
+T3 Code applies the composer permission mode through Pi's blocking tool hook:
 
-- **Threads, models, and thinking.** Start a thread with any available `provider/model` pair.
-  Switching the model or thinking level mid-thread applies immediately — no new thread needed.
-- **Your pi sessions are shared.** Every T3 Code pi thread is a real pi session file. Resume the
-  same conversation in a terminal with `pi --resume`, and a thread restarted in T3 Code picks its
-  session back up.
-- **Approvals.** With a thread's access mode set to *Approval required*, pi's `bash`, `edit`, and
-  `write` tools pause for your decision in T3 Code's approval UI. Other access modes run them
-  without asking, exactly like pi's own full-access default.
-- **Steering.** Sending a message while pi is working steers the run, like pi's own steering queue.
-- **Slash commands and skills.** Your pi extensions, prompt templates, and skills appear in the
-  composer's slash-command list and run inside pi when invoked.
+- **Supervised** asks before commands, file changes, and extension tools. Read-only tools continue.
+- **Auto-accept edits** allows Pi's edit and write tools, but asks before commands and extension
+  tools.
+- **Full access** allows tools without T3 Code approval prompts.
 
-## Differences from the CLI
+The **Auto** option is not shown for Pi because Pi does not expose an AI approval reviewer.
+Threads that already stored Auto before Pi support was added behave and display as Supervised.
 
-- Free-text pi dialogs (extension `input`/`editor` prompts) are surfaced as requests, but answering
-  is not supported yet — responding cancels the dialog.
-- pi compacts long conversations automatically; compaction shows in the thread timeline like other
-  providers' compaction.
-- T3 Code always starts pi with an explicit thinking level (`off` unless you pick one), so your
-  global `defaultThinkingLevel` setting in `~/.pi/agent/settings.json` does not apply to T3 Code
-  threads. Pick the level per model in the model picker instead.
+Changing the mode restarts the Pi provider session and resumes the same native conversation. The
+policy covers Pi tool calls; it is not an operating-system sandbox, and code that a trusted Pi
+extension runs outside a tool call remains governed by Pi's own extension trust model.
 
-## Updating
-
-pi is npm-managed. T3 Code checks the npm registry for new versions and shows an update notice;
-run the in-app update (which runs `pi update`) or update manually:
-
-```bash
-pi update
-```
+T3 Code's `delegate_task` tool creates durable child threads in the shared subagent UI. If the user
+installs Pi's example `subagent` extension, T3 Code also shows its task progress and results in that
+UI. Pi runs those children without a session, so they cannot be opened or resumed as T3 Code
+threads.
 
 ## Troubleshooting
 
-- **"pi CLI is not installed or not on PATH"** — install pi, or set Binary path to its full path.
-- **"no models have valid authentication"** — run `pi auth check --provider <provider>` or add a
-  provider API key, then refresh providers in Settings.
-- **A self-hosted model returns empty responses** — some OpenAI-compatible servers fail on
-  thinking levels they don't support. Set the model's thinking level to `off` in the model picker.
+- If Pi is unavailable, confirm that the configured binary runs on the server machine, then refresh
+  the provider in Settings.
+- If no models appear, open Pi directly and confirm its authentication and model configuration.
+- If discovery cannot complete, T3 Code keeps Pi available with the `Pi default` model. Start a
+  thread to let the interactive Pi session handle any startup prompt.
+- If a project extension is missing, approve the project in Pi, then start a fresh provider session.
+- If a project skill is missing from the `$` menu, approve the project in Pi and refresh the provider.
+- The context meter appears once Pi reports usage for the thread. Some model providers only
+  report usage when a response completes, so the meter can wait for the first reply.

@@ -1,3 +1,4 @@
+import { makeChecksRevalidator } from "./gitHubConditionalChecks.ts";
 import { runGitHubStackAction, type GitHubStackActionError } from "./githubStackActions.ts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -51,7 +52,7 @@ import {
   decodePullRequestActivityJson,
   decodePullRequestDetailJson,
   decodePullRequestCoreJson,
-  PULL_REQUEST_CORE_GRAPHQL_QUERY,
+  pullRequestCoreGraphQlQuery,
   type GitHubPullRequestCore,
   type GitHubPullRequestSummary,
   decodePullRequestPreviewJson,
@@ -541,6 +542,8 @@ export class GitHubPullRequestCli extends Context.Service<
       readonly host: string;
       readonly number: number;
     }) => Effect.Effect<ProviderChangeRequestSummary, GitHubPullRequestCliError>;
+
+    readonly revalidateChecks: Effect.Success<typeof makeChecksRevalidator>;
 
     readonly getPullRequestDetail: (input: {
       readonly cwd: string;
@@ -1090,6 +1093,7 @@ function actionArgs(
 export const make = Effect.gen(function* () {
   const github = yield* GitHubCli.GitHubCli;
   const graphQlBudget = yield* GitHubGraphQlBudget.GitHubGraphQlBudget;
+  const revalidateChecks = yield* makeChecksRevalidator;
   const routingIdentities = new Map<
     string,
     {
@@ -1591,35 +1595,34 @@ export const make = Effect.gen(function* () {
             ["-F", `number=${input.number}`],
             ["-f", `headRef=refs/pull/${input.number}/head`],
           ],
-          query: PULL_REQUEST_CORE_GRAPHQL_QUERY,
+          query: pullRequestCoreGraphQlQuery(input.host),
           decode: decodePullRequestCoreJson,
         }),
       ),
-    ).pipe(
-      Effect.flatMap((core) => {
-        if (!core.checksTruncated) return Effect.succeed(core);
-        // gh already pages check contexts. Keep its complete, deduplicated result for
-        // large check suites instead of letting the first 100 checks imply success.
-        return readLegacyDetail(input).pipe(
-          Effect.flatMap((detail) =>
-            detail.headSha !== core.headSha
-              ? Effect.fail(
-                  new GitHubPullRequestReadError({
-                    command: "gh",
-                    cwd: input.cwd,
-                    operation: "getPullRequestDetail",
-                    cause: new Error("Pull request head changed while reading checks."),
-                  }),
-                )
-              : Effect.succeed({
-                  ...core,
-                  checks: detail.checks,
-                  checksState: detail.checksState,
-                  checksTruncated: false,
+      // gh already pages check contexts. Keep its complete, deduplicated result for
+      // large check suites instead of letting the first 100 checks imply success.
+      Effect.filterOrElse(
+        (core) => !core.checksTruncated,
+        (core) =>
+          readLegacyDetail(input).pipe(
+            Effect.filterOrFail(
+              (detail) => detail.headSha === core.headSha,
+              () =>
+                new GitHubPullRequestReadError({
+                  command: "gh",
+                  cwd: input.cwd,
+                  operation: "getPullRequestDetail",
+                  cause: new Error("Pull request head changed while reading checks."),
                 }),
+            ),
+            Effect.map((detail) => ({
+              ...core,
+              checks: detail.checks,
+              checksState: detail.checksState,
+              checksTruncated: false,
+            })),
           ),
-        );
-      }),
+      ),
     );
   };
 
@@ -1822,7 +1825,12 @@ export const make = Effect.gen(function* () {
       const batchable = entries.filter(
         (entry) => buildPullRequestSummariesGraphQlQuery([entry.request]) !== null,
       );
-      const query = buildPullRequestSummariesGraphQlQuery(batchable.map((entry) => entry.request));
+      // Stack membership rides along where GitHub serves stacks, so the background sync can skip
+      // the REST stack read for pull requests that are in none.
+      const query = buildPullRequestSummariesGraphQlQuery(
+        batchable.map((entry) => entry.request),
+        first.request.host === "github.com",
+      );
       const batched =
         query === null
           ? Effect.succeed(new Map<number, GitHubPullRequestSummary>())
@@ -1881,6 +1889,7 @@ export const make = Effect.gen(function* () {
 
   return GitHubPullRequestCli.of({
     withVerifiedCredential,
+    revalidateChecks,
     getRoutingIdentity,
     getViewerLogin: (input) =>
       getRoutingIdentity(input).pipe(Effect.map((identity) => identity.viewer)),
@@ -1967,10 +1976,9 @@ export const make = Effect.gen(function* () {
       // the fallback out: an empty answer under one is already the answer.
       const hasQuery = (input.query?.trim().length ?? 0) > 0;
       return read(true).pipe(
-        Effect.flatMap((batch) =>
-          batch.items.length === 0 && input.cursor === undefined && !hasQuery
-            ? read(false)
-            : Effect.succeed(batch),
+        Effect.filterOrElse(
+          (batch) => batch.items.length > 0 || input.cursor !== undefined || hasQuery,
+          () => read(false),
         ),
         Effect.flatMap((batch) => {
           // Match the search query's host support, and enrich only rows that survived paging.
@@ -2131,6 +2139,7 @@ export const make = Effect.gen(function* () {
                   }),
                 );
           }),
+          // @effect-diagnostics-next-line flatMapConditionalToFilterOrFail:off - the fallback needs a non-null stack, which a predicate that also reads includeDetails cannot refine.
           Effect.flatMap((stack) => {
             if (!input.includeDetails || stack === null) return Effect.succeed(stack);
             return github
