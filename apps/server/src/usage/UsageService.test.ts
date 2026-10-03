@@ -107,6 +107,7 @@ const serviceLayers = (input: {
     Layer.provideMerge(
       Layer.succeed(HostProcessEnvironment, {
         HOME: input.home,
+        PI_CODING_AGENT_DIR: NodePath.join(input.home, "pi"),
         GROK_HOME: NodePath.join(input.home, "grok"),
         OPENCODE_DATA_DIR: NodePath.join(input.home, "opencode"),
         ANTIGRAVITY_DATA_DIR: NodePath.join(input.home, "antigravity"),
@@ -122,6 +123,100 @@ function totalOutputTokens(summary: { buckets: readonly { totals: { outputTokens
 }
 
 describe("UsageService", () => {
+  it.live.each(["agentDir", "sessionDir"] as const)(
+    "reads Pi %s history from disabled accounts, dedupes forks, and counts appended usage",
+    (mode) =>
+      Effect.gen(function* () {
+        const { home, settings } = yield* setup;
+        const piHome = NodePath.join(home, "pi-account");
+        const sessions = NodePath.join(
+          piHome,
+          mode === "sessionDir" ? "custom-sessions" : "sessions",
+        );
+        const transcript = NodePath.join(sessions, "project", "session.jsonl");
+        const entry = {
+          type: "message",
+          id: "abcd1234",
+          timestamp: "2026-08-01T10:00:00Z",
+          message: {
+            role: "assistant",
+            model: "pi-model",
+            usage: { input: 10, output: 20, cacheRead: 30, cacheWrite: 40, cost: { total: 0.5 } },
+          },
+        };
+        yield* Effect.promise(async () => {
+          await NodeFSP.mkdir(NodePath.dirname(transcript), { recursive: true });
+          await NodeFSP.writeFile(transcript, encodeUnknownJsonString(entry) + "\n");
+          await NodeFSP.writeFile(
+            NodePath.join(sessions, "project", "fork.jsonl"),
+            encodeUnknownJsonString(entry) + "\n",
+          );
+        });
+        const environment = [
+          {
+            name: mode === "sessionDir" ? "PI_CODING_AGENT_SESSION_DIR" : "PI_CODING_AGENT_DIR",
+            value: mode === "sessionDir" ? sessions : piHome,
+            sensitive: false,
+          },
+        ];
+        yield* Effect.gen(function* () {
+          const service = yield* UsageService.make;
+          const summary = yield* service.readSummary(WINDOW);
+          const piBuckets = summary.buckets.filter((bucket) => bucket.provider === "pi");
+          assert.strictEqual(piBuckets.length, 1);
+          assert.deepEqual(piBuckets[0]?.totals, {
+            uncachedInputTokens: 10,
+            outputTokens: 20,
+            cachedInputTokens: 30,
+            cacheCreationTokens: 40,
+            reasoningTokens: 0,
+          });
+          assert.strictEqual(piBuckets[0]?.costUsd, 0.5);
+          assert.strictEqual(piBuckets[0]?.costSource, "providerReported");
+          const piSources = summary.sources.filter(
+            (source) => source.fingerprint.provider === "pi",
+          );
+          assert.strictEqual(piSources.filter((source) => source.status === "ok").length, 1);
+          yield* Effect.promise(() =>
+            NodeFSP.appendFile(
+              transcript,
+              encodeUnknownJsonString({ ...entry, id: "abcd5678" }) + "\n",
+            ),
+          );
+          const updated = yield* service.readSummary(WINDOW);
+          assert.strictEqual(
+            updated.buckets.find((bucket) => bucket.provider === "pi")?.totals.outputTokens,
+            40,
+          );
+          assert.strictEqual(
+            updated.buckets.find((bucket) => bucket.provider === "pi")?.costUsd,
+            1,
+          );
+        }).pipe(
+          Effect.provide(
+            serviceLayers({
+              prefix: `usage-pi-${mode}`,
+              home,
+              settings: {
+                ...settings,
+                providerInstances: {
+                  [ProviderInstanceId.make("pi-personal")]: {
+                    driver: ProviderDriverKind.make("pi"),
+                    enabled: false,
+                    environment,
+                  },
+                  [ProviderInstanceId.make("pi-shared")]: {
+                    driver: ProviderDriverKind.make("pi"),
+                    environment,
+                  },
+                },
+              },
+            }),
+          ),
+        );
+      }).pipe(Effect.scoped),
+  );
+
   it.live.each([
     { explicitDefault: true, label: "explicit" },
     { explicitDefault: false, label: "legacy" },

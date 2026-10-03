@@ -7,6 +7,7 @@
  * @module usageTranscripts
  */
 import type { UsageProviderKind, UsageTokenTotals } from "@t3tools/contracts";
+import * as Predicate from "effect/Predicate";
 
 /**
  * Billing speed of a request. Faster speeds bill at a model-specific premium.
@@ -82,7 +83,7 @@ export function totalTokens(totals: UsageTokenTotals): number {
  * an order of magnitude.
  */
 export function mightCarryUsage(line: string, provider: UsageProviderKind): boolean {
-  if (provider === "claude") return line.includes('"usage"');
+  if (provider === "claude" || provider === "pi") return line.includes('"usage"');
   if (provider === "grok") return line.includes('"turn_completed"');
   return line.includes('"token_count"');
 }
@@ -165,6 +166,61 @@ export function parseClaudeRecord(parsed: unknown): UsageRecord | null {
     reportedCostUsd: typeof cost === "number" && Number.isFinite(cost) ? cost : null,
     speed: usageRecord["speed"] === "fast" ? "fast" : "standard",
     dedupeKey,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Pi                                                                         */
+/* -------------------------------------------------------------------------- */
+
+export function parsePiLine(line: string, sessionId: string): UsageRecord | null {
+  let entry: unknown;
+  try {
+    entry = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  return parsePiRecord(entry, sessionId);
+}
+
+/** Reads each entry's own usage; retained messages in summaries were already counted. */
+export function parsePiRecord(entry: unknown, sessionId: string): UsageRecord | null {
+  if (!Predicate.isObject(entry)) return null;
+  const message = entry.type === "message" ? entry.message : entry;
+  if (!Predicate.isObject(message)) return null;
+  const assistant = entry.type === "message" && message.role === "assistant";
+  const attributedUsage = entry.type === "usage";
+  if (
+    !assistant &&
+    !attributedUsage &&
+    !(entry.type === "message" && message.role === "toolResult") &&
+    entry.type !== "compaction" &&
+    entry.type !== "branch_summary"
+  )
+    return null;
+  const usage = message.usage;
+  if (!Predicate.isObject(usage)) return null;
+  const timestampMs = parseTimestampMs(entry.timestamp);
+  if (timestampMs === null) return null;
+  const model = assistant || attributedUsage ? message.model : "Tools/summaries";
+  if (typeof model !== "string" || model.length === 0) return null;
+  const cost = Predicate.isObject(usage.cost) ? usage.cost.total : undefined;
+  return {
+    provider: "pi",
+    timestampMs,
+    model,
+    sessionId,
+    totals: {
+      uncachedInputTokens: int(usage.input),
+      cachedInputTokens: int(usage.cacheRead),
+      cacheCreationTokens: int(usage.cacheWrite),
+      outputTokens: int(usage.output),
+      reasoningTokens: int(usage.reasoning),
+    },
+    reportedCostUsd: typeof cost === "number" && Number.isFinite(cost) && cost >= 0 ? cost : null,
+    speed: "standard",
+    // Forks preserve entry IDs and timestamps; IDs alone are only eight hex digits.
+    dedupeKey: typeof entry.id === "string" ? `${entry.id}:${timestampMs}` : null,
   };
 }
 

@@ -96,13 +96,22 @@ describe("scan cache round trip", () => {
       }),
     });
 
+    original.set("/pi.jsonl", {
+      size: 40,
+      mtimeMs: 500,
+      provider: "pi",
+      records: [record({ provider: "pi", model: "pi-model", reportedCostUsd: 0.25 })],
+      tailRecords: [],
+      position: position(),
+    });
     const restored = decodeScanCache(JSON.parse(JSON.stringify(encodeScanCache(original))));
 
-    expect(restored.size).toBe(4);
+    expect(restored.size).toBe(5);
     expect(restored.get("/a.jsonl")).toEqual(original.get("/a.jsonl"));
     expect(restored.get("/b.jsonl")).toEqual(original.get("/b.jsonl"));
     expect(restored.get("/grok.jsonl")).toEqual(original.get("/grok.jsonl"));
     expect(restored.get("/codex.jsonl")).toEqual(original.get("/codex.jsonl"));
+    expect(restored.get("/pi.jsonl")).toEqual(original.get("/pi.jsonl"));
   });
 
   it("drops an entry whose persisted parse state is corrupt", () => {

@@ -14,7 +14,7 @@ import {
 // external 65/517 MiB fixtures also exercise the production threshold.
 const readTranscriptRecords = (
   path: string,
-  provider: "claude" | "codex" | "grok",
+  provider: "claude" | "codex" | "grok" | "pi",
   position?: TranscriptParsePosition,
 ) => readWithDefaultThreshold(path, provider, position, { streamingThresholdBytes: 256 * 1024 });
 
@@ -95,7 +95,7 @@ const grok = {
 
 async function scan(
   lines: readonly unknown[],
-  provider: "claude" | "codex" | "grok",
+  provider: "claude" | "codex" | "grok" | "pi",
   name = "history",
 ) {
   const path = NodePath.join(dir, `${name}.jsonl`);
@@ -320,4 +320,39 @@ describe("large usage records", () => {
     expect(result?.records[0]?.reportedCostUsd).toBeNull();
     expect(result?.records[0]?.totals.outputTokens).toBe(99);
   });
+});
+
+it("streams large Pi entries and resumes appended usage without replaying retained messages", async () => {
+  const path = NodePath.join(dir, "pi.jsonl");
+  const usage = { input: 10, output: 20, cacheRead: 30, cacheWrite: 40, cost: { total: 0.5 } };
+  const entries = [
+    {
+      type: "message",
+      id: "m1",
+      timestamp,
+      message: { role: "assistant", content, model: "pi-model", usage },
+    },
+    { type: "compaction", id: "c1", timestamp, usage, retainedTail: [{ usage }] },
+    { type: "usage", id: "u1", timestamp, kind: "cache_warm", model: "pi-model", usage },
+  ];
+  await NodeFSP.writeFile(path, entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+  const smallReader = await readTranscriptRecords(path, "pi");
+  const ordinary = await readWithDefaultThreshold(path, "pi");
+  expect(smallReader?.records).toEqual(ordinary?.records);
+  expect(smallReader?.records).toHaveLength(3);
+  expect(smallReader?.records[0]).toMatchObject({
+    sessionId: path,
+    reportedCostUsd: 0.5,
+    totals: {
+      uncachedInputTokens: 10,
+      outputTokens: 20,
+      cachedInputTokens: 30,
+      cacheCreationTokens: 40,
+    },
+  });
+  await NodeFSP.appendFile(path, JSON.stringify({ ...entries[2], id: "u2" }) + "\n");
+  const resumed = await readTranscriptRecords(path, "pi", smallReader!.position);
+  expect(resumed?.resumed).toBe(true);
+  expect(resumed?.records).toHaveLength(1);
+  expect(resumed?.records[0]?.model).toBe("pi-model");
 });

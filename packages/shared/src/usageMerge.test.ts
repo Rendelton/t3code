@@ -79,6 +79,29 @@ function environment(id: string, usageSummary: UsageSummary): EnvironmentUsage {
 }
 
 describe("mergeUsage", () => {
+  it("preserves Pi over the wire and counts shared history once across environments", () => {
+    const pi = decodeSummary(
+      encodeSummary(
+        summary(
+          [bucket({ provider: "pi", model: "pi-model", sourcePath: "/pi/sessions" })],
+          [{ provider: "pi", hostId: "mac", homePath: "/pi/sessions" }],
+        ),
+      ),
+    );
+    const merged = mergeUsage(
+      [environment("local", pi), environment("remote", pi)],
+      USAGE_CONTRACT_VERSION,
+    );
+    expect(merged.providers).toHaveLength(1);
+    expect(merged.providers[0]).toMatchObject({
+      provider: "pi",
+      costUsd: 10,
+      totalTokens: 1160,
+      sessions: 1,
+    });
+    expect(merged.duplicateSources).toHaveLength(1);
+  });
+
   it("counts a Cursor account once across servers while retaining each server's other providers", () => {
     const account = {
       provider: "cursor" as const,

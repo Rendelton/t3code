@@ -32,6 +32,8 @@ import {
   parseCodexRecord,
   parseGrokLine,
   parseGrokRecord,
+  parsePiLine,
+  parsePiRecord,
   type CodexScanState,
   type UsageRecord,
 } from "./usageTranscripts.ts";
@@ -91,7 +93,7 @@ type SelectedFields = { readonly [key: string]: true | SelectedFields };
 
 // Keep the fields consumed by usageTranscripts, including reducer state and
 // dedupe/cost metadata. A selected subtree (usage) keeps future token fields.
-const USAGE_FIELDS: Record<"claude" | "codex" | "grok", SelectedFields> = {
+const USAGE_FIELDS: Record<"claude" | "codex" | "grok" | "pi", SelectedFields> = {
   claude: {
     type: true,
     timestamp: true,
@@ -114,6 +116,14 @@ const USAGE_FIELDS: Record<"claude" | "codex" | "grok", SelectedFields> = {
       info: { last_token_usage: true },
     },
   },
+  pi: {
+    type: true,
+    id: true,
+    timestamp: true,
+    model: true,
+    usage: true,
+    message: { role: true, model: true, usage: true },
+  },
   grok: {
     timestamp: true,
     params: {
@@ -125,7 +135,10 @@ const USAGE_FIELDS: Record<"claude" | "codex" | "grok", SelectedFields> = {
 };
 
 function selectUsageFields(provider: UsageProviderKind) {
-  const fields = USAGE_FIELDS[provider === "codex" || provider === "grok" ? provider : "claude"];
+  const fields =
+    USAGE_FIELDS[
+      provider === "codex" || provider === "grok" || provider === "pi" ? provider : "claude"
+    ];
   return (path: ReadonlyArray<string | number | null>): boolean => {
     let selected: true | SelectedFields = fields;
     for (const key of path) {
@@ -299,7 +312,7 @@ export async function readTranscriptRecords(
         for (const grokRecord of parseGrokLine(line)) out.push(grokRecord);
         return;
       }
-      const record = parseClaudeLine(line);
+      const record = provider === "pi" ? parsePiLine(line, filePath) : parseClaudeLine(line);
       if (record !== null) out.push(record);
     };
 
@@ -349,7 +362,9 @@ export async function readTranscriptRecords(
           const record =
             provider === "codex"
               ? parseCodexRecord(projected, state)
-              : parseClaudeRecord(projected);
+              : provider === "pi"
+                ? parsePiRecord(projected, filePath)
+                : parseClaudeRecord(projected);
           if (record !== null) out.push(record);
         }
       } else if (pendingBytes > 0) {

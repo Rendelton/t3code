@@ -92,6 +92,7 @@ describe("buildPeriodColumns", () => {
       { provider: "cursor", value: 0 },
       { provider: "opencode", value: 0 },
       { provider: "antigravity", value: 0 },
+      { provider: "pi", value: 0 },
     ]);
   });
 
@@ -137,4 +138,25 @@ describe("hourly chart columns", () => {
       ).map((column) => column.total),
     ).toEqual([0, 4, 0]);
   });
+});
+
+it("includes Pi activity in chart bands and provider filters", () => {
+  const [column] = buildPeriodColumns(
+    ["2026-08-01"],
+    new Map([
+      [
+        "2026-08-01",
+        {
+          day: "2026-08-01",
+          costUsd: 0.5,
+          totalTokens: 100,
+          byProvider: new Map([["pi" as const, { costUsd: 0.5, totalTokens: 100 }]]),
+        },
+      ],
+    ]),
+    "tokens",
+  );
+  expect(column?.bands.find((band) => band.provider === "pi")?.value).toBe(100);
+  expect(column?.total).toBe(100);
+  expect(providersWithUsage([{ provider: "pi", costUsd: 0.5, totalTokens: 100 }])).toEqual(["pi"]);
 });

@@ -6,6 +6,7 @@ import {
   parseClaudeLine,
   parseCodexLine,
   parseGrokLine,
+  parsePiLine,
   totalTokens,
 } from "./usageTranscripts.ts";
 
@@ -594,5 +595,87 @@ describe("parseGrokLine", () => {
 
     const records = parseGrokLine(line);
     expect(records[0]?.timestampMs).toBe(1_786_372_566_000);
+  });
+});
+
+describe("Pi usage", () => {
+  const timestamp = "2026-08-01T10:00:00Z";
+  const usage = {
+    input: 100,
+    output: 30,
+    cacheRead: 200,
+    cacheWrite: 50,
+    reasoning: 10,
+    totalTokens: 380,
+    cost: { total: 0.25 },
+  };
+  const entry = {
+    type: "message",
+    id: "abcd1234",
+    timestamp,
+    message: { role: "assistant", model: "claude-fable-5", usage },
+  };
+
+  it("keeps disjoint input/cache counts and provider-reported cost", () => {
+    const parsed = parsePiLine(JSON.stringify(entry), "session-1");
+    expect(parsed).toMatchObject({
+      provider: "pi",
+      model: "claude-fable-5",
+      sessionId: "session-1",
+      totals: {
+        uncachedInputTokens: 100,
+        outputTokens: 30,
+        cachedInputTokens: 200,
+        cacheCreationTokens: 50,
+        reasoningTokens: 10,
+      },
+      reportedCostUsd: 0.25,
+      speed: "standard",
+    });
+    expect(totalTokens(parsed!.totals)).toBe(380);
+    expect(parsePiLine(JSON.stringify(entry), "fork")?.dedupeKey).toBe(parsed?.dedupeKey);
+  });
+
+  it.each(["compaction", "branch_summary", "toolResult"])(
+    "counts %s usage without counting retained messages again",
+    (type) => {
+      const record =
+        type === "toolResult"
+          ? { ...entry, message: { role: type, usage } }
+          : { type, id: "summary1", timestamp, usage, retainedTail: [entry.message] };
+      expect(parsePiLine(JSON.stringify(record), "session-1")).toMatchObject({
+        model: "Tools/summaries",
+        totals: { outputTokens: 30 },
+        reportedCostUsd: 0.25,
+      });
+    },
+  );
+
+  it("counts model-attributed usage entries from Pi 1.x", () => {
+    expect(
+      parsePiLine(
+        JSON.stringify({
+          type: "usage",
+          id: "warm1234",
+          timestamp,
+          kind: "cache_warm",
+          provider: "anthropic",
+          model: "claude-fable-5",
+          usage,
+        }),
+        "session-1",
+      ),
+    ).toMatchObject({ model: "claude-fable-5", reportedCostUsd: 0.25 });
+  });
+
+  it.each([
+    "invalid JSON",
+    "null",
+    JSON.stringify({ ...entry, timestamp: "bad" }),
+    JSON.stringify({ ...entry, message: { role: "user", usage } }),
+    JSON.stringify({ ...entry, message: { role: "assistant", usage } }),
+    JSON.stringify({ type: "compaction", timestamp, retainedTail: [entry.message] }),
+  ])("ignores entries without valid attributable usage: %s", (line) => {
+    expect(parsePiLine(line, "session-1")).toBeNull();
   });
 });
