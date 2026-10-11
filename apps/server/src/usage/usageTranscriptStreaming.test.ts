@@ -5,6 +5,7 @@ import * as NodePath from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "@effect/vitest";
 
+import { TEST_FORMATS } from "./usageTestFormats.ts";
 import {
   readTranscriptRecords as readWithDefaultThreshold,
   type TranscriptParsePosition,
@@ -14,9 +15,12 @@ import {
 // external 65/517 MiB fixtures also exercise the production threshold.
 const readTranscriptRecords = (
   path: string,
-  provider: "claude" | "codex" | "grok" | "pi",
+  provider: keyof typeof TEST_FORMATS,
   position?: TranscriptParsePosition,
-) => readWithDefaultThreshold(path, provider, position, { streamingThresholdBytes: 256 * 1024 });
+) =>
+  readWithDefaultThreshold(path, TEST_FORMATS[provider], position, {
+    streamingThresholdBytes: 256 * 1024,
+  });
 
 let dir: string;
 beforeEach(async () => {
@@ -95,7 +99,7 @@ const grok = {
 
 async function scan(
   lines: readonly unknown[],
-  provider: "claude" | "codex" | "grok" | "pi",
+  provider: keyof typeof TEST_FORMATS,
   name = "history",
 ) {
   const path = NodePath.join(dir, `${name}.jsonl`);
@@ -106,6 +110,49 @@ async function scan(
 }
 
 describe("large usage records", () => {
+  it("keeps Pi model, cost, and fork identity after large assistant content", async () => {
+    const entry = {
+      type: "message",
+      id: "a123abcd",
+      timestamp,
+      message: {
+        role: "assistant",
+        provider: "anthropic",
+        model: "requested",
+        responseModel: "actual",
+        content: [{ type: "text", text: content }],
+        usage: {
+          input: 100,
+          output: 99,
+          cacheRead: 20,
+          cacheWrite: 5,
+          reasoning: 10,
+          cost: { total: 0.25 },
+        },
+      },
+    };
+    const result = await scan([{ type: "session", id: "pi-session" }, entry], "pi");
+    expect(result.records).toEqual([
+      {
+        provider: "pi",
+        model: "anthropic/actual",
+        rateModel: "actual",
+        sessionId: "pi-session",
+        timestampMs: Date.parse(timestamp),
+        totals: {
+          uncachedInputTokens: 100,
+          outputTokens: 99,
+          cachedInputTokens: 20,
+          cacheCreationTokens: 5,
+          reasoningTokens: 10,
+        },
+        reportedCostUsd: 0.25,
+        speed: "standard",
+        dedupeKey: JSON.stringify(["pi", entry.id, timestamp, "anthropic/actual"]),
+      },
+    ]);
+  });
+
   it("keeps usage after large Claude tool input, including fast-mode cost and dedupe metadata", async () => {
     const result = await scan([claude()], "claude");
     expect(result.records).toEqual([
@@ -144,7 +191,7 @@ describe("large usage records", () => {
         );
         const actual = await scan(large, provider);
         expect(actual.records).toEqual(expected.records);
-        expect(actual.position.codexState).toEqual(expected.position.codexState);
+        expect(actual.position.state).toEqual(expected.position.state);
       }
     },
   );
@@ -320,39 +367,4 @@ describe("large usage records", () => {
     expect(result?.records[0]?.reportedCostUsd).toBeNull();
     expect(result?.records[0]?.totals.outputTokens).toBe(99);
   });
-});
-
-it("streams large Pi entries and resumes appended usage without replaying retained messages", async () => {
-  const path = NodePath.join(dir, "pi.jsonl");
-  const usage = { input: 10, output: 20, cacheRead: 30, cacheWrite: 40, cost: { total: 0.5 } };
-  const entries = [
-    {
-      type: "message",
-      id: "m1",
-      timestamp,
-      message: { role: "assistant", content, model: "pi-model", usage },
-    },
-    { type: "compaction", id: "c1", timestamp, usage, retainedTail: [{ usage }] },
-    { type: "usage", id: "u1", timestamp, kind: "cache_warm", model: "pi-model", usage },
-  ];
-  await NodeFSP.writeFile(path, entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n");
-  const smallReader = await readTranscriptRecords(path, "pi");
-  const ordinary = await readWithDefaultThreshold(path, "pi");
-  expect(smallReader?.records).toEqual(ordinary?.records);
-  expect(smallReader?.records).toHaveLength(3);
-  expect(smallReader?.records[0]).toMatchObject({
-    sessionId: path,
-    reportedCostUsd: 0.5,
-    totals: {
-      uncachedInputTokens: 10,
-      outputTokens: 20,
-      cachedInputTokens: 30,
-      cacheCreationTokens: 40,
-    },
-  });
-  await NodeFSP.appendFile(path, JSON.stringify({ ...entries[2], id: "u2" }) + "\n");
-  const resumed = await readTranscriptRecords(path, "pi", smallReader!.position);
-  expect(resumed?.resumed).toBe(true);
-  expect(resumed?.records).toHaveLength(1);
-  expect(resumed?.records[0]?.model).toBe("pi-model");
 });

@@ -1,4 +1,5 @@
 import type { MarkdownNode } from "react-native-nitro-markdown/headless";
+import { isMarkdownFileLinkLabel } from "@t3tools/shared/markdownLinks";
 import { collectComposerInlineTokens } from "@t3tools/shared/composerInlineTokens";
 import { imageMimeType } from "@t3tools/shared/image";
 import { isWindowsAbsolutePath } from "@t3tools/shared/path";
@@ -109,7 +110,8 @@ export function nativeMarkdownContextCopyRanges(
   }>,
 ) {
   let offset = 0;
-  return runs.flatMap(({ run, text, inlineImageLength }) => {
+  const ranges: Array<{ start: number; end: number; text: string }> = [];
+  for (const [index, { run, text, inlineImageLength }] of runs.entries()) {
     const start = offset;
     offset += text.length + inlineImageLength;
     const reference = parseComposerContextHref(run.href ?? "");
@@ -117,11 +119,25 @@ export function nativeMarkdownContextCopyRanges(
       ? formatComposerContextReference({ ...reference, label: run.text })
       : run.skillName
         ? `$${run.skillName}`
-        : run.fileIcon && run.href
-          ? (run.sourceText ?? `[${run.text}](<${run.href}>)`)
-          : null;
-    return source === null ? [] : [{ start, end: offset, text: source }];
-  });
+        : run.sourceText !== undefined
+          ? run.sourceText
+          : run.fileIcon && run.href
+            ? `[${run.text}](<${run.href}>)`
+            : null;
+    if (source === null) continue;
+    const previous = ranges.at(-1);
+    if (
+      run.sourceText !== undefined &&
+      !runs[index - 1]?.run.fileIcon &&
+      previous?.end === start &&
+      previous.text === source
+    ) {
+      previous.end = offset;
+    } else {
+      ranges.push({ start, end: offset, text: source });
+    }
+  }
+  return ranges;
 }
 
 import type { SelectableMarkdownSkill } from "./SelectableMarkdownText.types";
@@ -181,6 +197,7 @@ interface RunContext {
   readonly href?: string;
   readonly externalHost?: string;
   readonly fileIcon?: MarkdownFileIcon;
+  readonly sourceText?: string;
   readonly role?: NativeMarkdownTextRun["role"];
   readonly headingLevel?: number;
   readonly depth?: number;
@@ -268,6 +285,7 @@ function sameRunStyle(left: NativeMarkdownTextRun, right: NativeMarkdownTextRun)
     left.href === right.href &&
     left.externalHost === right.externalHost &&
     left.fileIcon === right.fileIcon &&
+    left.sourceText === right.sourceText &&
     left.skillName === right.skillName &&
     left.skillLabel === right.skillLabel &&
     left.role === right.role &&
@@ -298,6 +316,7 @@ function appendRun(
     ...(context.href ? { href: context.href } : {}),
     ...(context.externalHost ? { externalHost: context.externalHost } : {}),
     ...(context.fileIcon ? { fileIcon: context.fileIcon } : {}),
+    ...(context.sourceText !== undefined ? { sourceText: context.sourceText } : {}),
     ...(context.role ? { role: context.role } : {}),
     ...(context.headingLevel ? { headingLevel: context.headingLevel } : {}),
     ...(context.depth ? { depth: context.depth } : {}),
@@ -432,6 +451,36 @@ function nodeTextContent(node: MarkdownNode): string {
   return (node.children ?? []).map(nodeTextContent).join("");
 }
 
+function fileLinkLabelMarkdown(node: MarkdownNode): string {
+  const children = (node.children ?? []).map(fileLinkLabelMarkdown).join("");
+  switch (node.type) {
+    case "bold":
+      return `**${children}**`;
+    case "italic":
+      return `*${children}*`;
+    case "strikethrough":
+      return `~~${children}~~`;
+    case "code_inline": {
+      const content = nodeTextContent(node);
+      const fence = "`".repeat(
+        Math.max(0, ...(content.match(/`+/g) ?? []).map((run) => run.length)) + 1,
+      );
+      const padding = /^`|`$|^ .* $/.test(content) && content.trim().length > 0 ? " " : "";
+      return `${fence}${padding}${content}${padding}${fence}`;
+    }
+    case "soft_break":
+      return "\n";
+    case "line_break":
+      return "  \n";
+    case "text":
+      return textNodeContent(nodeTextContent(node)).replace(/[\\[\]*_`~]/g, "\\$&");
+    case "image":
+      return `![${(node.alt ?? "").replace(/[\\[\]]/g, "\\$&")}](<${node.href ?? ""}>)`;
+    default:
+      return node.content ?? children;
+  }
+}
+
 function appendNode(
   runs: NativeMarkdownTextRun[],
   node: MarkdownNode,
@@ -482,6 +531,23 @@ function appendNode(
       }
       const presentation = resolveMarkdownLinkPresentation(node.href ?? "");
       if (presentation.kind === "file") {
+        const label = textNodeContent(nodeTextContent(node));
+        if (!isMarkdownFileLinkLabel(label, presentation.href)) {
+          const fileRuns: NativeMarkdownTextRun[] = [];
+          const fileContext = {
+            ...context,
+            href: presentation.href,
+            sourceText: `[${fileLinkLabelMarkdown(node)}](<${presentation.href}>)`,
+          };
+          appendChildren(fileRuns, node, fileContext);
+          appendRun(fileRuns, " ", fileContext);
+          appendRun(fileRuns, presentation.label, {
+            ...fileContext,
+            fileIcon: presentation.icon,
+          });
+          runs.push(...fileRuns);
+          return runs;
+        }
         return appendRun(runs, presentation.label, {
           ...context,
           href: presentation.href,
@@ -992,4 +1058,102 @@ export function nativeMarkdownDocumentRuns(
     }
   }
   return decorateMentionRuns(decorateSkillRuns(runs, skills));
+}
+
+const HTML_TAG = /<!--[\s\S]*?-->|<\/?[a-z](?:[^>"']|"[^"]*"|'[^']*')*>/gi;
+
+function attribute(tag: string, name: string): string | null {
+  const attributes = /([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g;
+  for (const match of tag.matchAll(attributes)) {
+    if (match[1]?.toLowerCase() === name) {
+      return decodeHtmlEntities(match[2] ?? match[3] ?? match[4] ?? "");
+    }
+  }
+  return null;
+}
+
+/** Called only for parsed HTML nodes, so Markdown code examples keep their literal tags. */
+export function markdownHtmlContent(content: string): string {
+  // An HTML block such as <details> can also contain Markdown fences and code spans.
+  const codeRanges: Array<{ start: number; end: number }> = [];
+  const delimiters = [...content.matchAll(/`+|~{3,}/g)];
+  for (let index = 0; index < delimiters.length; index += 1) {
+    const opening = delimiters[index]!;
+    const lineStart = content.lastIndexOf("\n", opening.index - 1) + 1;
+    const fenced =
+      opening[0].length >= 3 && /^ {0,3}$/.test(content.slice(lineStart, opening.index));
+    if (opening[0][0] === "~" && !fenced) continue;
+    let closingIndex = -1;
+    for (let candidate = index + 1; candidate < delimiters.length; candidate += 1) {
+      const closing = delimiters[candidate]!;
+      if (!fenced && closing[0] === opening[0]) {
+        closingIndex = candidate;
+        break;
+      }
+      if (!fenced || closing[0][0] !== opening[0][0] || closing[0].length < opening[0].length)
+        continue;
+      const start = content.lastIndexOf("\n", closing.index - 1) + 1;
+      const nextLine = content.indexOf("\n", closing.index);
+      const end = nextLine === -1 ? content.length : nextLine;
+      if (
+        /^ {0,3}$/.test(content.slice(start, closing.index)) &&
+        /^\s*$/.test(content.slice(closing.index + closing[0].length, end))
+      ) {
+        closingIndex = candidate;
+        break;
+      }
+    }
+    if (closingIndex === -1) {
+      if (fenced) codeRanges.push({ start: opening.index, end: content.length });
+      continue;
+    }
+    const closing = delimiters[closingIndex]!;
+    codeRanges.push({ start: opening.index, end: closing.index + closing[0].length });
+    index = closingIndex;
+  }
+  return content.replace(HTML_TAG, (tag, offset: number) => {
+    if (codeRanges.some((range) => offset >= range.start && offset < range.end)) return tag;
+    if (tag.startsWith("<!--")) return "";
+    if (/^<img\b/i.test(tag)) {
+      const src = attribute(tag, "src");
+      if (!src) return "";
+      const alt = (attribute(tag, "alt") ?? "").replace(/[\\[\]]/g, "\\$&");
+      const href = src.replace(/</g, "%3C").replace(/>/g, "%3E").replace(/\n/g, "");
+      return `![${alt}](<${href}>)`;
+    }
+    if (/^<summary\b/i.test(tag)) return "\n\n**";
+    if (/^<\/summary\s*>/i.test(tag)) return "**\n\n";
+    if (/^<br\b/i.test(tag)) return "  \n";
+    if (/^<\/?(?:p|div|details)\b/i.test(tag)) return "\n\n";
+    return "";
+  });
+}
+
+export function nativeMarkdownWithHtml(
+  document: MarkdownNode,
+  parse: (content: string) => MarkdownNode,
+): MarkdownNode {
+  const withoutOffsets = (node: MarkdownNode): MarkdownNode => {
+    const { beg: _beg, end: _end, children, ...rest } = node;
+    return { ...rest, ...(children ? { children: children.map(withoutOffsets) } : {}) };
+  };
+  const transform = (node: MarkdownNode): MarkdownNode[] => {
+    if (node.type === "html_block" || node.type === "html_inline") {
+      const content = markdownHtmlContent(node.content ?? "");
+      if (!content.trim())
+        return /^<br\b/i.test(node.content ?? "") ? [{ type: "line_break" }] : [];
+      // Fragment offsets restart at zero, so they cannot identify chunks in the parent document.
+      const children = (parse(content).children ?? []).map(withoutOffsets);
+      return node.type === "html_inline"
+        ? children.flatMap((child) =>
+            child.type === "paragraph" ? (child.children ?? []) : [child],
+          )
+        : children;
+    }
+    if (!node.children) return [node];
+    const children = node.children.flatMap(transform);
+    if (node.type === "paragraph" && children.length === 0) return [];
+    return [{ ...node, children }];
+  };
+  return { ...document, children: (document.children ?? []).flatMap(transform) };
 }

@@ -1,7 +1,28 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { buildPeriodColumns, niceScale } from "./UsageProviderChart";
+import { buildPeriodColumns, chartScale, niceScale } from "./UsageProviderChart";
 import { providersWithUsage } from "./usageProviders";
+
+describe("chartScale", () => {
+  const column = (codex: number) => ({
+    total: codex,
+    bands: [{ provider: "codex" as const, value: codex }],
+  });
+
+  it("holds unlabeled placeholder gridlines while loading providers have nothing to show", () => {
+    const scale = chartScale([column(0)], new Set(["codex" as const]));
+
+    expect(scale.labeled).toBe(false);
+    expect(scale.ticks.length).toBeGreaterThan(1);
+  });
+
+  it("scales to what is on screen, loading or not", () => {
+    expect(chartScale([column(40)], new Set(["codex" as const]))).toMatchObject({
+      max: 40,
+      labeled: true,
+    });
+  });
+});
 
 describe("niceScale", () => {
   it("never puts the peak above the top of the scale", () => {
@@ -48,11 +69,12 @@ describe("buildPeriodColumns", () => {
       "2026-08-01",
       {
         day: "2026-08-01",
-        costUsd: 30,
-        totalTokens: 300,
+        costUsd: 35,
+        totalTokens: 350,
         byProvider: new Map([
           ["codex" as const, { costUsd: 10, totalTokens: 100 }],
           ["claude" as const, { costUsd: 20, totalTokens: 200 }],
+          ["pi" as const, { costUsd: 5, totalTokens: 50 }],
         ]),
       },
     ],
@@ -70,13 +92,13 @@ describe("buildPeriodColumns", () => {
 
   it("plots each day on its own", () => {
     expect(buildPeriodColumns(days, byDay, "cost").map((column) => column.total)).toEqual([
-      30, 0, 5,
+      35, 0, 5,
     ]);
   });
 
   it("reads the requested metric", () => {
     expect(buildPeriodColumns(days, byDay, "tokens").map((column) => column.total)).toEqual([
-      300, 0, 50,
+      350, 0, 50,
     ]);
   });
 
@@ -92,7 +114,7 @@ describe("buildPeriodColumns", () => {
       { provider: "cursor", value: 0 },
       { provider: "opencode", value: 0 },
       { provider: "antigravity", value: 0 },
-      { provider: "pi", value: 0 },
+      { provider: "pi", value: 5 },
     ]);
   });
 
@@ -138,25 +160,4 @@ describe("hourly chart columns", () => {
       ).map((column) => column.total),
     ).toEqual([0, 4, 0]);
   });
-});
-
-it("includes Pi activity in chart bands and provider filters", () => {
-  const [column] = buildPeriodColumns(
-    ["2026-08-01"],
-    new Map([
-      [
-        "2026-08-01",
-        {
-          day: "2026-08-01",
-          costUsd: 0.5,
-          totalTokens: 100,
-          byProvider: new Map([["pi" as const, { costUsd: 0.5, totalTokens: 100 }]]),
-        },
-      ],
-    ]),
-    "tokens",
-  );
-  expect(column?.bands.find((band) => band.provider === "pi")?.value).toBe(100);
-  expect(column?.total).toBe(100);
-  expect(providersWithUsage([{ provider: "pi", costUsd: 0.5, totalTokens: 100 }])).toEqual(["pi"]);
 });

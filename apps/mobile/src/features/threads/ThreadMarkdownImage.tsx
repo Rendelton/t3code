@@ -1,19 +1,16 @@
 import type { AssetResource, EnvironmentId } from "@t3tools/contracts";
+import { Image } from "expo-image";
 import { createContext, useContext, useEffect, useId, useState } from "react";
-import {
-  ActivityIndicator,
-  Image,
-  Pressable,
-  StyleSheet,
-  View,
-  type ViewStyle,
-} from "react-native";
+import { Pressable, StyleSheet, View, type ViewStyle } from "react-native";
 
+import { AppActivityIndicator } from "../../components/AppActivityIndicator";
+import { useFilePreviewGallery } from "../../components/FilePreviewGallery";
 import { AppText as Text } from "../../components/AppText";
 import type { FilePreviewSource } from "../../components/FilePreviewModal";
 import { MediaActionsMenu } from "../../components/MediaActionsMenu";
 import { PresentationSource } from "../../components/NativePresentation";
-import { useMediaActions, type MediaActionsSource } from "../../lib/mediaActions";
+import { useMediaActions } from "../../state/mediaActions";
+import { type MediaActionsSource } from "../../lib/mediaActionsSource";
 import { useAssetUrlState } from "../../state/assets";
 import {
   MARKDOWN_IMAGE_MAX_WIDTH,
@@ -41,6 +38,7 @@ export function ThreadMarkdownImageView(props: {
   readonly actionsSource?: MediaActionsSource;
   readonly onPressPreview: (source: FilePreviewSource) => void;
 }) {
+  const withGallery = useFilePreviewGallery();
   const sourceIdentifier = useId();
   const mediaActions = useMediaActions(props.actionsSource);
   const contextWidth = useContext(MarkdownImageAvailableWidthContext);
@@ -95,7 +93,7 @@ export function ThreadMarkdownImageView(props: {
             {failed ? (
               <Text className="text-xs text-foreground-muted">Image unavailable</Text>
             ) : (
-              <ActivityIndicator />
+              <AppActivityIndicator />
             )}
           </Pressable>
         </MediaActionsMenu>
@@ -109,13 +107,15 @@ export function ThreadMarkdownImageView(props: {
                 mediaActions.actions.length > 0 ? "Touch and hold for media actions" : undefined
               }
               onPress={() =>
-                props.onPressPreview({
-                  kind: "image",
-                  uri: props.uri!,
-                  name: props.actionsSource?.name ?? props.alt ?? "Image",
-                  sourceIdentifier,
-                  actionsSource: props.actionsSource,
-                })
+                props.onPressPreview(
+                  withGallery({
+                    kind: "image",
+                    uri: props.uri!,
+                    name: props.actionsSource?.name ?? props.alt ?? "Image",
+                    sourceIdentifier,
+                    actionsSource: props.actionsSource,
+                  }),
+                )
               }
               style={{ alignSelf: "flex-start" }}
             >
@@ -154,11 +154,12 @@ function ThreadMarkdownImageRequest(props: {
     <>
       <Image
         source={{ uri: props.uri }}
-        resizeMode="contain"
+        contentFit="contain"
+        cachePolicy="memory-disk"
         accessible={false}
         onLoad={(event) => {
           setLoaded(true);
-          props.onLoad(event.nativeEvent.source);
+          props.onLoad(event.source);
         }}
         onError={props.onError}
         style={{ width: "100%", height: "100%", opacity: loaded ? 1 : 0 }}
@@ -178,12 +179,16 @@ function ThreadMarkdownImageRequest(props: {
 /** Environment-hosted image that loads through a signed asset URL. */
 export function ThreadMarkdownImage(props: {
   readonly environmentId: EnvironmentId;
-  readonly resource: Extract<AssetResource, { readonly _tag: "attachment" | "media-file" }>;
+  readonly resource: Extract<
+    AssetResource,
+    { readonly _tag: "attachment" | "media-file" | "tool-output-image" }
+  >;
   readonly alt: string | null;
   readonly srcFragment?: string;
   readonly actionsSource?: MediaActionsSource;
   readonly onPressPreview: (source: FilePreviewSource) => void;
 }) {
+  const withGallery = useFilePreviewGallery();
   const assetUrl = useAssetUrlState(props.environmentId, props.resource);
 
   return (
@@ -192,13 +197,25 @@ export function ThreadMarkdownImage(props: {
       sourceKey={
         props.resource._tag === "attachment"
           ? `attachment:${props.resource.attachmentId}`
-          : `workspace:${props.resource.path}`
+          : props.resource._tag === "tool-output-image"
+            ? `tool-output:${props.resource.itemId}:${props.resource.index}`
+            : `workspace:${props.resource.path}`
       }
       unavailable={assetUrl._tag === "Failure"}
       knownSize={assetUrl._tag === "Success" ? assetUrl.imageDimensions : undefined}
       alt={props.alt}
       actionsSource={props.actionsSource}
-      onPressPreview={props.onPressPreview}
+      onPressPreview={(source) => {
+        const { uri: _uri, ...rest } = source as FilePreviewSource & { uri?: string };
+        props.onPressPreview(
+          withGallery({
+            ...rest,
+            gallery: undefined,
+            environmentId: props.environmentId,
+            resource: props.resource,
+          }),
+        );
+      }}
     />
   );
 }

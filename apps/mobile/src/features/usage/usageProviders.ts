@@ -38,7 +38,7 @@ export function useProviderColors(): Record<UsageProviderKind, string> {
     cursor: "#8b8b8b",
     opencode: "#5b9bbd",
     antigravity: "#8c7bd1",
-    pi: "#c08a32",
+    pi: "#4d9f8a",
   };
 }
 
