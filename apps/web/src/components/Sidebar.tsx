@@ -1,7 +1,10 @@
 import { type EnvironmentId, type ScopedProjectRef } from "@t3tools/contracts";
 import { ThreadHoverCard, ThreadHoverCardPopup } from "./ThreadHoverCard";
 import { CollapsibleSectionHeader } from "./ui/collapsible-section-header";
-import { setThreadChangeRequestSnapshot } from "./ThreadStatusIndicators";
+import {
+  setThreadChangeRequestSnapshot,
+  ThreadTerminalStatusButton,
+} from "./ThreadStatusIndicators";
 import { ThreadContextDragGhost } from "./chat/ThreadContextDragGhost";
 import {
   dropThreadContext,
@@ -142,6 +145,7 @@ import { useAcknowledgeThreadWoke, useThreadActions } from "../hooks/useThreadAc
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { useTerminalFocus } from "../hooks/useTerminalFocus";
 import { isCommandPaletteOpen, openCommandPalette } from "../commandPaletteBus";
+import { registerSettleAndAdvance } from "../settleAndAdvance";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
 import { useClientSettings } from "../hooks/useSettings";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
@@ -248,7 +252,6 @@ import {
   terminalStatusFromRunningIds,
   threadChangeRequestSnapshotsAtom,
   type ThreadChangeRequestSnapshot,
-  synchronizeTerminalPulse,
   type TerminalStatusIndicator,
   useLinkedThreadPullRequest,
   ThreadSearchPullRequestNumber,
@@ -1725,19 +1728,13 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
         onOpenPullRequest={handlePrClick}
       />
     ) : null;
-  const terminalStatusIcon = terminalStatus ? (
-    <span
-      role="img"
-      aria-label={terminalProcessLabel(terminalProcessCount)}
-      data-testid={`sidebar-terminal-status-${thread.id}`}
-      className={cn("inline-flex shrink-0 items-center justify-center", terminalStatus.colorClass)}
-    >
-      <TerminalIcon
-        className={cn("size-3.5", terminalStatus.pulse && "motion-safe:animate-status-pulse")}
-        onAnimationStart={synchronizeTerminalPulse}
-      />
-    </span>
-  ) : null;
+  const terminalStatusIcon = (
+    <ThreadTerminalStatusButton
+      threadRef={threadRef}
+      terminalIds={runningTerminalIds}
+      onThreadActivate={onThreadActivate}
+    />
+  );
   // Same pen the new-thread draft rows lead with, so both kinds of unsent
   // work read the same way in the list.
   const draftIndicator = hasUnsentDraft ? (
@@ -3458,6 +3455,8 @@ export default function Sidebar() {
     },
     [planForwardNavigation, settleThread],
   );
+  // The thread.settle shortcut parks the open thread through this same path.
+  useEffect(() => registerSettleAndAdvance(attemptSettle), [attemptSettle]);
   // Post-settle navigation must skip threads settling in this same batch —
   // they are all leaving the card block together. Rows that are already
   // explicitly settled are skipped: nothing to do on a valid mixed selection.

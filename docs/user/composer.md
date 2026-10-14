@@ -85,6 +85,21 @@ On web and desktop, use Settings → Providers → **Models** to add an unlisted
 name and options. Only options supported by the provider integration affect turns. Antigravity
 uses its account catalog and does not support custom models.
 
+To rename a built-in model on every client, edit the server's `settings.json` in its `userdata`
+directory. Add a custom model entry with the built-in model ID and a new name under that provider
+instance:
+
+```json
+{
+  "providerInstances": {
+    "codex": {
+      "driver": "codex",
+      "config": { "customModels": [{ "slug": "gpt-5.5", "name": "Team GPT" }] }
+    }
+  }
+}
+```
+
 ## Model defaults
 
 T3 Code remembers your provider, model, and model options for new threads. A
@@ -242,7 +257,8 @@ excerpt, Terminal 1 lines 3-4" and similar to screen readers.
 A pull request appears as its icon and number. Its color reflects whether it was open, draft,
 merged, or closed when it was attached. Select it to inspect the captured title and branches,
 then choose **Open pull request** to visit the pull request. On web and desktop, type `#` to browse the newest
-pull requests in the current project's repository. Continue typing digits to filter the recent list
+pull requests in the current project's repository. Pull requests linked to the thread are included
+from any repository and listed first, after any exact number match. Continue typing digits to filter the recent list
 by any part of its pull request numbers. A complete number is also resolved directly, even when that
 pull request is older than the recent list. Type a single word after `#` to search pull requests in
 the repository by text. Choose a result to insert it as a chip.
