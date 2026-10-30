@@ -10,6 +10,7 @@ import * as Electron from "electron";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import * as DesktopEarlyElectronStartup from "./DesktopEarlyElectronStartup.ts";
+import { sourceTreeIconFileNames } from "./DesktopAssets.ts";
 import { resolveDesktopAppBranding } from "./DesktopEnvironment.ts";
 import { renderUrlHandlerDesktopEntry } from "./DesktopLinuxUrlHandler.ts";
 import * as ElectronProtocol from "../electron/ElectronProtocol.ts";
@@ -71,27 +72,28 @@ export const make = Effect.gen(function* () {
           "applications",
         );
         NodeFS.mkdirSync(applicationsDir, { recursive: true });
-        const iconPath = Electron.app.isPackaged
-          ? NodePath.posix.join(
-              applicationsDir,
-              "..",
-              "icons",
-              `${linux.linuxDesktopEntryName}.png`,
-            )
-          : undefined;
-        if (iconPath !== undefined) {
-          try {
-            NodeFS.mkdirSync(NodePath.posix.dirname(iconPath), { recursive: true });
-            NodeFS.copyFileSync(
-              NodePath.posix.join(
-                Electron.app.getAppPath(),
-                "apps/desktop/prod-resources/icon.png",
-              ),
-              iconPath,
+        // GNOME may cache this entry as soon as setDesktopName runs. Source
+        // launches need the icon here too, before the asynchronous asset service.
+        const iconPath = NodePath.posix.join(
+          applicationsDir,
+          "..",
+          "icons",
+          `${linux.linuxDesktopEntryName}.png`,
+        );
+        const brand = linux.isDevelopment ? "dev" : "prod";
+        const iconSourcePath = Electron.app.isPackaged
+          ? NodePath.posix.join(Electron.app.getAppPath(), "apps/desktop/prod-resources/icon.png")
+          : NodePath.resolve(
+              __dirname,
+              "../../../assets",
+              brand,
+              sourceTreeIconFileNames[brand].universalPng,
             );
-          } catch {
-            // Icon installation is optional; registration retries after readiness.
-          }
+        try {
+          NodeFS.mkdirSync(NodePath.posix.dirname(iconPath), { recursive: true });
+          NodeFS.copyFileSync(iconSourcePath, iconPath);
+        } catch {
+          // Icon installation is optional; registration retries after readiness.
         }
         NodeFS.writeFileSync(
           NodePath.posix.join(applicationsDir, linux.linuxDesktopEntryName),
@@ -102,7 +104,7 @@ export const make = Effect.gen(function* () {
             }).displayName,
             execTarget: process.env.APPIMAGE?.trim() || process.execPath,
             scheme: ElectronProtocol.getDesktopScheme(linux.isDevelopment),
-            ...(iconPath === undefined ? {} : { iconPath }),
+            iconPath,
           }),
           "utf8",
         );

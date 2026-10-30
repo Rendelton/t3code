@@ -6,6 +6,7 @@ import * as Layer from "effect/Layer";
 import { beforeEach, vi } from "vite-plus/test";
 
 const {
+  appState,
   appendSwitchMock,
   getSwitchValueMock,
   hasSwitchMock,
@@ -16,6 +17,7 @@ const {
   copyFileSyncMock,
   execFileSyncMock,
 } = vi.hoisted(() => ({
+  appState: { isPackaged: true },
   appendSwitchMock: vi.fn(),
   getSwitchValueMock: vi.fn(),
   hasSwitchMock: vi.fn(),
@@ -31,7 +33,9 @@ vi.mock("electron", () => ({
   app: {
     setDesktopName: setDesktopNameMock,
     getVersion: () => "0.0.37",
-    isPackaged: true,
+    get isPackaged() {
+      return appState.isPackaged;
+    },
     getAppPath: () => "/tmp/.mount_T3/resources/app.asar",
     commandLine: {
       appendSwitch: appendSwitchMock,
@@ -59,6 +63,7 @@ import * as DesktopPreReadyPlatform from "./DesktopPreReadyPlatform.ts";
 
 describe("DesktopPreReadyPlatform", () => {
   beforeEach(() => {
+    appState.isPackaged = true;
     appendSwitchMock.mockReset();
     getSwitchValueMock.mockReset();
     hasSwitchMock.mockReset();
@@ -185,6 +190,47 @@ describe("DesktopPreReadyPlatform", () => {
       }),
     ).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllEnvs())));
   });
+
+  it.effect.each([
+    { development: false, brand: "prod", fileName: "black-universal-1024.png" },
+    { development: true, brand: "dev", fileName: "blueprint-universal-1024.png" },
+  ])(
+    "installs the $brand source icon before registering the desktop identity",
+    ({ development, brand, fileName }) => {
+      vi.stubEnv("VITE_DEV_SERVER_URL", development ? "http://localhost:5733" : "");
+      vi.stubEnv("XDG_DATA_HOME", "/xdg");
+      appState.isPackaged = false;
+      getSwitchValueMock.mockReturnValue("");
+      const desktopName = development
+        ? "com.t3tools.T3Code.Development.desktop"
+        : "com.t3tools.T3Code.desktop";
+      const iconPath = `/xdg/icons/${desktopName}.png`;
+      let installedIcon: string | undefined;
+      let entry: string | undefined;
+      copyFileSyncMock.mockImplementation((source: string, destination: string) => {
+        assert.match(source, new RegExp(`/assets/${brand}/${fileName.replaceAll(".", "\\.")}$`));
+        assert.equal(destination, iconPath);
+        installedIcon = destination;
+      });
+      writeFileSyncMock.mockImplementation((_path: string, contents: string) => {
+        assert.equal(installedIcon, iconPath);
+        entry = contents;
+      });
+      setDesktopNameMock.mockImplementation((name: string) => {
+        assert.equal(name, desktopName);
+        assert.include(entry ?? "", `Icon=${iconPath}`);
+      });
+      return DesktopPreReadyPlatform.make.pipe(
+        Effect.provideService(HostProcess.Platform, "linux"),
+        Effect.asVoid,
+        Effect.ensuring(
+          Effect.sync(() => {
+            vi.unstubAllEnvs();
+          }),
+        ),
+      );
+    },
+  );
 
   it.effect("keeps startup available when the early desktop entry cannot be written", () => {
     getSwitchValueMock.mockReturnValue("");

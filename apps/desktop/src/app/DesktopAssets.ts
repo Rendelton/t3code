@@ -61,7 +61,7 @@ const resolveResourcePath = Effect.fn("desktop.assets.resolveResourcePath")(func
   return Option.none<string>();
 });
 
-const sourceTreeIconFileNames = {
+export const sourceTreeIconFileNames = {
   dev: {
     ico: "blueprint-windows.ico",
     macPng: "blueprint-macos-1024.png",
