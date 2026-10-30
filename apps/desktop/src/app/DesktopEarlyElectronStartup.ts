@@ -34,6 +34,9 @@ export interface EarlyLinuxElectronOptions {
 export const resolveLinuxDesktopEntryName = (isDevelopment: boolean): string =>
   isDevelopment ? "com.t3tools.T3Code.Development.desktop" : "com.t3tools.T3Code.desktop";
 
+export const resolveLinuxWmClass = (isDevelopment: boolean): string =>
+  resolveLinuxDesktopEntryName(isDevelopment).replace(/\.desktop$/, "");
+
 const trimNonEmpty = (value: string | undefined): string | null => {
   const trimmed = value?.trim();
   return trimmed && trimmed.length > 0 ? trimmed : null;
@@ -160,7 +163,7 @@ export function resolveEarlyLinuxElectronOptions(
   const isDevelopment = isDevelopmentEnvironment(input.env);
   return {
     isDevelopment,
-    linuxWmClass: isDevelopment ? "t3code-dev" : "t3code",
+    linuxWmClass: resolveLinuxWmClass(isDevelopment),
     linuxDesktopEntryName: resolveLinuxDesktopEntryName(isDevelopment),
     passwordStore: resolveLinuxPasswordStoreSwitch({
       preference,

@@ -30,7 +30,7 @@ const makeEnvironment = (path: Path.Path, overrides: Record<string, unknown> = {
     isDevelopment: false,
     displayName: "T3 Code (Alpha)",
     linuxDesktopEntryName: "com.t3tools.T3Code.desktop",
-    linuxWmClass: "t3code",
+    linuxWmClass: "com.t3tools.T3Code",
     linuxApplicationsDir: "/home/alice/.local/share/applications",
     appImagePath: Option.some("/home/alice/Applications/T3-Code.AppImage"),
     path,
@@ -330,6 +330,7 @@ describe("DesktopLinuxUrlHandler", () => {
     return Effect.gen(function* () {
       yield* runRegister(nonLinux, { environment: { platform: "darwin" } });
       yield* runRegister(unpackaged, {
+        iconSource: "/repo/assets/dev/blueprint-universal-1024.png",
         environment: {
           isPackaged: false,
           linuxDesktopEntryName: "com.t3tools.T3Code.Development.desktop",
@@ -341,6 +342,16 @@ describe("DesktopLinuxUrlHandler", () => {
         unpackaged.files[0]?.path,
         "/home/alice/.local/share/applications/com.t3tools.T3Code.Development.desktop",
       );
+      assert.include(
+        unpackaged.files[0]?.content ?? "",
+        "Icon=/home/alice/.local/share/icons/com.t3tools.T3Code.Development.desktop.png",
+      );
+      assert.deepEqual(unpackaged.copies, [
+        {
+          source: "/repo/assets/dev/blueprint-universal-1024.png",
+          destination: "/home/alice/.local/share/icons/com.t3tools.T3Code.Development.desktop.png",
+        },
+      ]);
       assert.deepEqual(unpackaged.commands, []);
     });
   });

@@ -133,7 +133,7 @@ export const make = Effect.gen(function* () {
       displayName: environment.displayName,
       execTarget,
       scheme,
-      ...(environment.isPackaged ? { iconPath } : {}),
+      iconPath,
     });
     // Pre-ready setup normally wrote this already. Avoid truncating a valid
     // entry while the portal may be reading it during startup.
@@ -223,9 +223,6 @@ export const make = Effect.gen(function* () {
     if (environment.platform !== "linux") {
       return;
     }
-    yield* writeDesktopEntry;
-    if (!environment.isPackaged) return;
-
     yield* Effect.gen(function* () {
       const { png } = yield* assets.iconPaths;
       if (Option.isNone(png)) return;
@@ -237,6 +234,9 @@ export const make = Effect.gen(function* () {
         logWarning("URL handler icon copy failed", { iconPath, category: error.reason._tag }),
       ),
     );
+
+    yield* writeDesktopEntry;
+    if (!environment.isPackaged) return;
 
     yield* updateDesktopDatabase.pipe(
       // Some MIME implementations, including GIO, use mimeinfo.cache to verify
