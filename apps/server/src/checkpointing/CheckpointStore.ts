@@ -10,12 +10,30 @@ import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 export interface CaptureCheckpointInput {
   readonly cwd: string;
   readonly checkpointRef: CheckpointRef;
+  /** The checkpoint this one follows, so a turn that switched branches starts where it landed. */
+  readonly previousCheckpointRef?: CheckpointRef;
+  /** Folders below `cwd` (relative, `/`-separated) that have their own checkpoints. */
+  readonly excludePaths?: ReadonlyArray<string>;
+}
+
+export interface CaptureHeadCheckpointInput {
+  readonly cwd: string;
+  readonly checkpointRef: CheckpointRef;
+  /** A commit `resolveCleanHead` returned for this folder. */
+  readonly head: string;
+  /**
+   * When the folder was seen clean, in epoch seconds, if that was earlier than now. Commits made
+   * after a checkpoint count as the turn's own work, so a late snapshot must not postdate them.
+   */
+  readonly seenAt?: number;
 }
 
 export interface RestoreCheckpointInput {
   readonly cwd: string;
   readonly checkpointRef: CheckpointRef;
   readonly fallbackToHead?: boolean;
+  /** Folders below `cwd` the restore leaves as they are, as in a capture. */
+  readonly excludePaths?: ReadonlyArray<string>;
 }
 
 export interface DiffCheckpointsInput {
@@ -29,6 +47,8 @@ export interface DiffCheckpointsInput {
   readonly maxOutputBytes?: number;
   /** Limits the diff to these exact paths. An empty list yields an empty diff. */
   readonly filePaths?: ReadonlyArray<string>;
+  /** Folders below `cwd` left out of the diff, as in a capture. */
+  readonly excludePaths?: ReadonlyArray<string>;
 }
 
 export interface ListAuthoredPathsInput {
@@ -49,6 +69,17 @@ export class CheckpointStore extends Context.Service<
 
     readonly captureCheckpoint: (
       input: CaptureCheckpointInput,
+    ) => Effect.Effect<void, CheckpointStoreError>;
+
+    /**
+     * HEAD's commit when the folder matches it exactly: nothing staged, modified or untracked.
+     * Null otherwise. One status, where a capture stages the whole worktree.
+     */
+    readonly resolveCleanHead: (cwd: string) => Effect.Effect<string | null, CheckpointStoreError>;
+
+    /** Snapshots a folder that was clean at `head` from that commit, without reading its files. */
+    readonly captureHeadCheckpoint: (
+      input: CaptureHeadCheckpointInput,
     ) => Effect.Effect<void, CheckpointStoreError>;
 
     readonly hasCheckpointRef: (
@@ -85,20 +116,32 @@ export const make = Effect.gen(function* () {
     return handle.driver.checkpoints satisfies VcsCheckpointOps;
   });
 
-  const isGitRepository: CheckpointStore["Service"]["isGitRepository"] = (cwd) =>
-    vcsRegistry
-      .detect({ cwd, requestedKind: "git" })
-      .pipe(
-        Effect.flatMap((repository) =>
-          repository ? repository.driver.isInsideWorkTree(cwd) : Effect.succeed(false),
-        ),
-      );
+  const isGitRepository: CheckpointStore["Service"]["isGitRepository"] = Effect.fn(
+    "CheckpointStore.isGitRepository",
+  )(function* (cwd) {
+    const git = yield* vcsRegistry.get("git");
+    return yield* git.isInsideWorkTree(cwd);
+  });
 
   const captureCheckpoint: CheckpointStore["Service"]["captureCheckpoint"] = Effect.fn(
     "captureCheckpoint",
   )(function* (input) {
     const checkpoints = yield* resolveCheckpoints(input.cwd);
     return yield* checkpoints.captureCheckpoint(input);
+  });
+
+  const resolveCleanHead: CheckpointStore["Service"]["resolveCleanHead"] = Effect.fn(
+    "CheckpointStore.resolveCleanHead",
+  )(function* (cwd) {
+    const checkpoints = yield* resolveCheckpoints(cwd);
+    return yield* checkpoints.resolveCleanHead(cwd);
+  });
+
+  const captureHeadCheckpoint: CheckpointStore["Service"]["captureHeadCheckpoint"] = Effect.fn(
+    "CheckpointStore.captureHeadCheckpoint",
+  )(function* (input) {
+    const checkpoints = yield* resolveCheckpoints(input.cwd);
+    return yield* checkpoints.captureHeadCheckpoint(input);
   });
 
   const hasCheckpointRef: CheckpointStore["Service"]["hasCheckpointRef"] = Effect.fn(
@@ -139,6 +182,8 @@ export const make = Effect.gen(function* () {
   return CheckpointStore.of({
     isGitRepository,
     captureCheckpoint,
+    resolveCleanHead,
+    captureHeadCheckpoint,
     hasCheckpointRef,
     restoreCheckpoint,
     diffCheckpoints,

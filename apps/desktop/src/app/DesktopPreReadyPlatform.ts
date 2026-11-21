@@ -15,7 +15,10 @@ import * as DesktopEarlyElectronStartup from "./DesktopEarlyElectronStartup.ts";
 import { sourceTreeIconFileNames } from "./DesktopAssets.ts";
 import { trimmedString } from "./DesktopConfig.ts";
 import { resolveDesktopAppBranding } from "./DesktopEnvironment.ts";
-import { renderUrlHandlerDesktopEntry } from "./DesktopLinuxUrlHandler.ts";
+import {
+  renderUrlHandlerDesktopEntry,
+  replacedVersionedAppImagePath,
+} from "./DesktopLinuxUrlHandler.ts";
 import * as ElectronProtocol from "../electron/ElectronProtocol.ts";
 
 export interface DesktopPreReadyCommandLineReader {
@@ -57,6 +60,8 @@ const LinuxDesktopEntryConfig = Config.all({
   xdgDataHome: trimmedString("XDG_DATA_HOME"),
   launcherPath: trimmedString("T3CODE_DESKTOP_LAUNCHER_PATH"),
   appImagePath: trimmedString("APPIMAGE"),
+  // electron-updater sets this on the AppImage it relaunches after installing an update.
+  relaunchedByUpdater: trimmedString("APPIMAGE_SILENT_INSTALL"),
 });
 
 /** @public */
@@ -94,31 +99,59 @@ export const make = Effect.gen(function* () {
           "applications",
         );
         NodeFS.mkdirSync(applicationsDir, { recursive: true });
-        // GNOME may cache this entry as soon as setDesktopName runs. Source
-        // launches need the icon here too, before the asynchronous asset service.
         const iconPath = NodePath.posix.join(
           applicationsDir,
           "..",
           "icons",
           `${linux.linuxDesktopEntryName}.png`,
         );
-        const brand = linux.isDevelopment ? "dev" : "prod";
-        const iconSourcePath = Electron.app.isPackaged
-          ? NodePath.posix.join(Electron.app.getAppPath(), "apps/desktop/prod-resources/icon.png")
-          : NodePath.resolve(
-              __dirname,
-              "../../../assets",
-              brand,
-              sourceTreeIconFileNames[brand].universalPng,
-            );
         try {
           NodeFS.mkdirSync(NodePath.posix.dirname(iconPath), { recursive: true });
-          NodeFS.copyFileSync(iconSourcePath, iconPath);
-        } catch {
-          // Icon installation is optional; registration retries after readiness.
+          if (Electron.app.isPackaged) {
+            // Electron's copyFileSync from app.asar leaves a temporary file behind.
+            NodeFS.writeFileSync(
+              iconPath,
+              NodeFS.readFileSync(
+                NodePath.posix.join(
+                  Electron.app.getAppPath(),
+                  "apps/desktop/prod-resources/icon.png",
+                ),
+              ),
+            );
+          } else {
+            // GNOME may cache the entry before the asynchronous asset service runs.
+            const brand = linux.isDevelopment ? "dev" : "prod";
+            NodeFS.copyFileSync(
+              NodePath.resolve(
+                __dirname,
+                "../../../assets",
+                brand,
+                sourceTreeIconFileNames[brand].universalPng,
+              ),
+              iconPath,
+            );
+          }
+        } catch {}
+        const desktopEntryPath = NodePath.posix.join(applicationsDir, linux.linuxDesktopEntryName);
+        const { appImagePath } = linuxDesktopEntryConfig;
+        if (
+          Option.isSome(appImagePath) &&
+          Option.isNone(linuxDesktopEntryConfig.launcherPath) &&
+          Option.contains(linuxDesktopEntryConfig.relaunchedByUpdater, "true")
+        ) {
+          try {
+            const replacedPath = replacedVersionedAppImagePath({
+              previousEntry: NodeFS.readFileSync(desktopEntryPath, "utf8"),
+              appImagePath: appImagePath.value,
+            });
+            // Relative, so the pair survives a moved folder; symlink never overwrites a file.
+            if (replacedPath !== null) {
+              NodeFS.symlinkSync(NodePath.posix.basename(appImagePath.value), replacedPath);
+            }
+          } catch {}
         }
         NodeFS.writeFileSync(
-          NodePath.posix.join(applicationsDir, linux.linuxDesktopEntryName),
+          desktopEntryPath,
           renderUrlHandlerDesktopEntry({
             displayName: resolveDesktopAppBranding({
               isDevelopment: linux.isDevelopment,
